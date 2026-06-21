@@ -19,6 +19,7 @@ from homeassistant.components.switch import (
     SwitchEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -83,10 +84,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     raffredda._exclusive = riscalda
     riscalda._exclusive = raffredda
     antifurto = Omoda9TheftAlarmSwitch(coord)
+    polling = Omoda9PollingSwitch(coord)
     add([ricarica, ricarica_prog, parabrezza, lunotto, volante,
          sedile_caldo, sedile_aria, pass_caldo, pass_aria,
          psx_caldo, psx_aria, pdx_caldo, pdx_aria,
-         raffredda, riscalda, antifurto])
+         raffredda, riscalda, antifurto, polling])
 
 
 class Omoda9ComfortSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, RestoreEntity):
@@ -265,6 +267,42 @@ class Omoda9ScheduledChargeSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEnt
     async def async_turn_off(self, **kwargs) -> None:
         await self._run_command("ricarica_prog_off", False,
                                 {"mainSwitch": 0, "chargeAppointPlans": [self._plan(0)]})
+
+
+class Omoda9PollingSwitch(Omoda9Entity, SwitchEntity, RestoreEntity):
+    """Interruttore "Aggiornamento automatico": attiva/disattiva il poll periodico
+    (sveglia + lettura) senza toccare le opzioni. NON è un comando all'auto: agisce solo
+    sul timer locale. ON di default; lo stato si ripristina al riavvio di HA.
+
+    Quando è OFF l'auto non viene più svegliata automaticamente: i sensori restano
+    sull'ultimo valore noto (aggiornabili a mano col pulsante "Aggiorna posizione")."""
+
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:autorenew"
+
+    def __init__(self, coord) -> None:
+        super().__init__(coord, "Omoda9 Aggiornamento automatico", "polling_auto",
+                         entity_id_format=ENTITY_ID_FORMAT)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # ripristina l'ultima scelta: se era OFF, ferma il poll avviato di default nel setup.
+        last = await self.async_get_last_state()
+        if last is not None and last.state in ("on", "off"):
+            self.coordinator.set_poll_enabled(last.state == "on")
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator.poll_enabled)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self.coordinator.set_poll_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self.coordinator.set_poll_enabled(False)
+        self.async_write_ha_state()
 
 
 class Omoda9TheftAlarmSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, RestoreEntity):

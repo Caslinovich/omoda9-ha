@@ -39,5 +39,17 @@
       "already_configured": "This vehicle (VIN) is already configured.",
       "token_move_failed": "Could not store the authentication token. Check Home Assistant's config folder permissions and try again."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Omoda 9 — automatic updates",
+        "description": "How often to wake the car and refresh telemetry + GPS position. 0 = disabled. The charging interval is used while the car is plugged in (telemetry refreshes more often to follow the charge).",
+        "data": {
+          "poll_normal_min": "Update interval when parked (minutes, 0 = off)",
+          "poll_charging_min": "Update interval while plugged in (minutes, 0 = off)"
+        }
+      }
+    }
   }
 }

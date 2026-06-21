@@ -10,6 +10,7 @@ DALL'entry prima di importarli (assunzione: una sola auto per istanza HA).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,9 +22,9 @@ import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -31,6 +32,8 @@ from .const import (
     DOMAIN, CAR_SEED, DEFAULT_AWAKE_WINDOW, DEFAULT_SESSION_EVERY, CERT_FILES,
     CONF_VIN, CONF_TUSERID, CONF_PIN, CONF_EMAIL, CONF_CERTS_SRC,
     CONF_BFF, CONF_TSP_HOST, CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, CONF_CHANNEL_ID,
+    CONF_POLL_NORMAL, CONF_POLL_CHARGING, DEFAULT_POLL_NORMAL_MIN,
+    DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT,
     DEFAULTS,
 )
 
@@ -134,6 +137,14 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
         self._car = None  # paho mqtt.Client (importato in _connect_car, executor)
         self._keepalive_unsub = None  # cancella il timer keep-alive sessione
+        # poll telemetria periodico (sveglia+lettura). Intervalli in MINUTI dalle opzioni
+        # (0 = off): a riposo `poll_normal_min`, alla colonnina `poll_charging_min`.
+        opt = entry.options or {}
+        self.poll_normal_min = int(opt.get(CONF_POLL_NORMAL, DEFAULT_POLL_NORMAL_MIN))
+        self.poll_charging_min = int(opt.get(CONF_POLL_CHARGING, DEFAULT_POLL_CHARGING_MIN))
+        self._poll_unsub = None       # cancella il timer del poll (async_call_later)
+        self._poll_busy = False       # evita sovrapposizioni tra cicli
+        self.poll_enabled = True      # interruttore "Aggiornamento automatico" (switch)
         self._fields: dict[str, str] = {}
         self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
@@ -232,6 +243,82 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001 — un errore di rete non deve fermare il timer
             _LOGGER.debug("[keepalive] errore non bloccante: %s", err)
 
+    # ───────────────── poll telemetria periodico (sveglia + lettura) ─────────────────
+    def async_start_telemetry_poll(self) -> None:
+        """Avvia il poll periodico se almeno un intervallo è attivo (>0).
+
+        Timer auto-rischedulante (`async_call_later`): l'intervallo è DINAMICO — più
+        breve quando l'auto è attaccata alla colonnina (`poll_charging_min`), altrimenti
+        `poll_normal_min`. Ogni ciclo SVEGLIA l'auto (vehicleLocation = posizione) e
+        forza una lettura realtime (telemetria)."""
+        if not self.poll_enabled:
+            _LOGGER.debug("[poll] disattivato dall'interruttore")
+            return
+        if self.poll_normal_min <= 0 and self.poll_charging_min <= 0:
+            _LOGGER.debug("[poll] disattivato (entrambi gli intervalli a 0)")
+            return
+        if self._poll_unsub is None:
+            self._schedule_next_poll()
+
+    @callback
+    def set_poll_enabled(self, on: bool) -> None:
+        """Attiva/disattiva il poll periodico a runtime (switch "Aggiornamento automatico")."""
+        self.poll_enabled = on
+        if on:
+            self.async_start_telemetry_poll()
+        elif self._poll_unsub is not None:
+            self._poll_unsub()
+            self._poll_unsub = None
+
+    def _is_plugged(self) -> bool:
+        """True se la spina di ricarica è collegata (chargeGunState != 0). Legge il
+        valore più fresco: realtime se presente, altrimenti l'ultimo 5A02 via MQTT."""
+        from .entity import field_on
+        rt = self.data.get("realtime") or {}
+        v = rt.get("chargeGunState")
+        if v is None:
+            with self._state_lock:
+                v = self._fields.get("chargeGunState")
+        return bool(field_on(v))
+
+    def _schedule_next_poll(self) -> None:
+        """Rischedula il prossimo poll in base allo stato spina attuale. Se lo stato
+        corrente ha intervallo 0 (modalità disattivata) NON sveglia, ma ricontrolla più
+        tardi (per accorgersi quando cambia l'attacco alla colonnina)."""
+        mins = self.poll_charging_min if self._is_plugged() else self.poll_normal_min
+        if not mins or mins <= 0:
+            # stato attuale off → recheck con l'altro intervallo (o 60 min) senza svegliare
+            mins = self.poll_charging_min or self.poll_normal_min or 60
+        self._poll_unsub = async_call_later(self.hass, mins * 60, self._telemetry_poll_cb)
+
+    async def _telemetry_poll_cb(self, _now) -> None:
+        self._poll_unsub = None
+        try:
+            mins = self.poll_charging_min if self._is_plugged() else self.poll_normal_min
+            if mins and mins > 0 and not self._poll_busy:
+                self._poll_busy = True
+                try:
+                    await self._do_poll_cycle()
+                finally:
+                    self._poll_busy = False
+        except Exception as err:  # noqa: BLE001 — un errore non deve fermare il timer
+            _LOGGER.debug("[poll] errore non bloccante: %s", err)
+        finally:
+            self._schedule_next_poll()
+
+    async def _do_poll_cycle(self) -> None:
+        """Un ciclo: sveglia (posizione via vehicleLocation/1301) + lettura realtime."""
+        _LOGGER.debug("[poll] ciclo: sveglia + lettura realtime (plugged=%s)", self._is_plugged())
+        try:
+            await self.async_send_command("localizza")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[poll] sveglia (localizza) fallita: %s", err)
+        await asyncio.sleep(POLL_WAKE_WAIT)
+        try:
+            await self.async_probe(force=True)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[poll] lettura realtime fallita: %s", err)
+
     def _connect_car(self) -> None:
         self._bind_core()
         # import qui (executor): a livello modulo causa un blocking-call warning nel loop.
@@ -288,6 +375,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         if self._keepalive_unsub is not None:
             self._keepalive_unsub()
             self._keepalive_unsub = None
+        if self._poll_unsub is not None:
+            self._poll_unsub()
+            self._poll_unsub = None
         if self._car is not None:
             try:
                 self._car.disconnect()
@@ -469,10 +559,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             except Exception as err:  # noqa: BLE001 — il fallback non deve far fallire la sveglia
                 emit(f"fallback Localizza fallito: {err}")
 
-    async def async_probe(self) -> None:
-        await self.hass.async_add_executor_job(self._probe)
+    async def async_probe(self, force: bool = False) -> None:
+        await self.hass.async_add_executor_job(self._probe, force)
 
-    def _probe(self) -> None:
+    def _probe(self, force: bool = False) -> None:
         self._bind_core()
         import probe as PROBE
 
@@ -480,7 +570,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             _LOGGER.info("[probe] %s", m)
             self._update({"probe_status": str(m)[:255]})
 
-        PROBE.probe_once(emit, on_data=self._on_probe_data)
+        # force=True (poll periodico): ignora il cooldown di 30 min della sonda.
+        PROBE.probe_once(emit, force=force, on_data=self._on_probe_data)
 
     def _on_probe_data(self, data: dict) -> None:
         """Dati realtime (GPS/batteria/velocità/online) dalla sonda → stato posizione.

@@ -51,9 +51,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise
     # keep-alive: refresh sessione periodico per non far scadere il token da fermi
     coordinator.async_start_keepalive()
+    # poll telemetria periodico (sveglia + lettura); intervalli dalle opzioni
+    coordinator.async_start_telemetry_poll()
+    # ricarica l'entry quando l'utente cambia le opzioni (es. intervalli di poll)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Opzioni cambiate → ricarica l'entry per riapplicare gli intervalli di poll."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
