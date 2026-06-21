@@ -112,7 +112,7 @@ CODE_MEANING = {
 
 
 def _access_token():
-    with open(wake.TOKEN_PATH) as fh:
+    with open(wake._token_path()) as fh:
         tok = json.load(fh)
     return tok.get("data", tok).get("access_token") if isinstance(tok.get("data", tok), dict) else tok.get("access_token")
 

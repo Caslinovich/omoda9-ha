@@ -259,7 +259,6 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         stale nello stesso processo. Qui li forziamo ai valori dell'entry → robusto
         rispetto all'ordine di import. Idempotente, eseguito in executor."""
         import wake, commands, probe
-        wake.TOKEN_PATH = self.token_path
         wake.VIN = self.vin
         wake.TSP_HOST = self.tsp_host
         commands.VIN = self.vin

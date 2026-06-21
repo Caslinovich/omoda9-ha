@@ -30,8 +30,20 @@ import tsp_sign as S
 
 TSP_HOST   = os.environ.get("TSP_HOST", "https://tspconsole-eu.cheryinternational.com")   # regione (default EU)
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
-# token canonico: lo aggiorna il flusso di login OTP (login_omoda.py + prova_token.py)
-TOKEN_PATH = os.environ.get("OMODA_TOKEN_PATH", os.path.join(HERE, "token.json"))
+
+
+def _token_path() -> str:
+    """Path del token canonico, riletto da env a OGNI accesso (NON congelato all'import).
+
+    Necessario perché core/ viene importato una sola volta nel processo HA ma con
+    contesti diversi: il config flow conia il token in un path 'pending', il runtime
+    usa quello per-VIN. Leggere TOKEN_PATH a import-time darebbe il path sbagliato
+    (es. la verifica post-OTP leggeva il vecchio token per-VIN già invalidato)."""
+    return os.environ.get("OMODA_TOKEN_PATH") or os.path.join(HERE, "token.json")
+
+
+# Compat: alcune chiamate storiche usano wake.TOKEN_PATH come valore iniziale.
+TOKEN_PATH = _token_path()
 # stato persistente del cooldown (sopravvive ai riavvii del ponte)
 WAKE_STATE = os.environ.get("OMODA_WAKE_STATE", os.path.join(HERE, "data", "wake_state.json"))
 
@@ -61,7 +73,7 @@ def _save_last_sms(ts: float):
 
 # ───────────────────────── chiamate REST (patchabili nei test) ──────────────────
 def _access_token() -> str:
-    with open(TOKEN_PATH) as fh:
+    with open(_token_path()) as fh:
         tok = json.load(fh)
     tok = tok.get("data", tok)
     return tok["access_token"]
@@ -71,7 +83,7 @@ def _refresh_token() -> bool:
     Stesso endpoint/headers del login OTP (login_otp.py), che NON è dietro il firewall Aliyun.
     Ritorna True se ha ottenuto un nuovo access_token, False altrimenti (es. refresh scaduto → serve OTP)."""
     try:
-        with open(TOKEN_PATH) as fh:
+        with open(_token_path()) as fh:
             tok = json.load(fh)
     except Exception:
         return False
@@ -95,10 +107,11 @@ def _refresh_token() -> bool:
         return False
     # scrittura atomica: nuovo token su file temporaneo poi rename (token.json mai corrotto)
     try:
-        tmp = TOKEN_PATH + ".tmp"
+        path = _token_path()
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(j, f, ensure_ascii=False)
-        os.replace(tmp, TOKEN_PATH)
+        os.replace(tmp, path)
     except Exception:
         return False
     return True
