@@ -6,6 +6,23 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v0.3.0 — 2026-06-21
+
+- **La serratura ora è un vero lucchetto.** La blocchi e la sblocchi con un solo
+  tocco, e vedi lo stato (chiusa/aperta) nella stessa card. Prima erano
+  un'indicazione separata e due pulsanti distinti.
+- **Il clima ora è un interruttore.** Lo accendi e lo spegni come una normale luce
+  (l'accensione avvia la climatizzazione a 21° per 15 minuti).
+- **Baule, finestrini e tetto si comandano come tapparelle.** Apri e chiudi
+  direttamente, con stato e comando insieme. (La ventilazione finestrini resta un
+  pulsante a parte.)
+- **Schermata principale più pulita.** Le informazioni di servizio — esiti dei
+  comandi, orari dell'ultimo contatto, stato della sessione e campo del codice OTP —
+  sono state spostate nella sezione "diagnostica" del dispositivo, così in primo
+  piano restano solo i controlli che usi davvero.
+- **Andamenti nel tempo per batteria e velocità.** Ora vengono registrate
+  storicamente: puoi vederne i grafici e usarle nelle statistiche.
+
 ## v0.2.6 — 2026-06-21
 
 - Aggiunto questo elenco delle novità (changelog), così a ogni aggiornamento
