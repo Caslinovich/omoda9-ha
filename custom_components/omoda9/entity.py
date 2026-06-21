@@ -87,15 +87,16 @@ class Omoda9OptimisticMixin:
         self._opt_value = None
         self._opt_anchor = None
 
-    async def _run_command(self, key: str, target) -> None:
+    async def _run_command(self, key: str, target, params: dict | None = None) -> None:
         """Attua un comando mostrando subito lo stato target (ottimistico).
 
-        Su eccezione del comando (rete/auth/backend) ANNULLA l'ottimismo — così la
-        card torna allo stato reale invece di restare bloccata su un target mai
-        attuato — e propaga un errore leggibile (toast in UI)."""
+        `params` = override parametrico del body (clima: temperatura/durata; ricarica
+        programmata: piano). Su eccezione del comando (rete/auth/backend) ANNULLA
+        l'ottimismo — così la card torna allo stato reale invece di restare bloccata
+        su un target mai attuato — e propaga un errore leggibile (toast in UI)."""
         self._set_optimistic(target)
         try:
-            await self.coordinator.async_send_command(key)
+            await self.coordinator.async_send_command(key, params)
         except Exception as err:  # noqa: BLE001 — qualunque fallimento del comando
             self._clear_optimistic()
             self.async_write_ha_state()

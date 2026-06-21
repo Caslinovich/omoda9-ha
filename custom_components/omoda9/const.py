@@ -1,7 +1,8 @@
 """Costanti del custom component Omoda 9 / Jaecoo."""
 
 DOMAIN = "omoda9"
-PLATFORMS = ["sensor", "binary_sensor", "button", "lock", "switch", "cover", "device_tracker", "text"]
+PLATFORMS = ["sensor", "binary_sensor", "button", "lock", "switch", "climate",
+             "number", "cover", "device_tracker", "text"]
 
 # Campi auto (5A02) ora rappresentati da entità native ATTUABILI (lock/switch/cover):
 # esclusi dalla creazione di sensor/binary_sensor "di sola lettura" per non duplicarli.
@@ -22,7 +23,12 @@ FIELDS_AS_RICH_ENTITY = {
 # Comandi del catalogo ora gestiti da lock/switch/cover → esclusi dai pulsanti singoli
 # (il tap sul lock/switch/cover invoca lo stesso comando del catalogo).
 COMMANDS_AS_RICH_ENTITY = {
-    "blocca", "sblocca", "clima_on", "clima_off",
+    "blocca", "sblocca",
+    # clima_on/clima_off ora pilotati dalla climate entity (climate.py) → niente pulsanti.
+    "clima_on", "clima_off",
+    # ricarica EV: switch dedicati (switch.py) → niente pulsanti singoli.
+    # NB: `avvio_remoto` NON è qui → resta un pulsante (button.omoda9_avvio_remoto).
+    "ricarica_start", "ricarica_stop", "ricarica_prog_on", "ricarica_prog_off",
     "baule_apri", "baule_chiudi",
     "finestrini_apri", "finestrini_chiudi",
     "tetto_apri", "tetto_chiudi",

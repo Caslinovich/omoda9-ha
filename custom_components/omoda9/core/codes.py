@@ -17,6 +17,10 @@ qui è quello più ricorrente/utile; ogni chiamante può aggiungere contesto.
 CODE_MEANING = {
     "000000": "ok ✅",
     "A00079": "comando accettato ✅",
+    # A00084 (i18n: "No vehicle control command permission"): l'account/veicolo non ha il
+    # permesso PER QUEL comando. Visto dal vivo su remoteStart (2026-06-21): la nostra Omoda 9
+    # non consente l'avvio remoto del motore, mentre clima/serratura/GPS funzionano.
+    "A00084": "comando non consentito su questa auto 🚫 (permesso negato per questa funzione)",
     "A00089": "taskId non valido ❌ (serve un taskId benedetto da checkPassword)",
     "A00546": "taskId non valido ❌ (scene errato in checkPassword)",
     "A00567": "parametri checkPassword incompleti ❌",

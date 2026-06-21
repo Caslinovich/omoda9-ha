@@ -31,11 +31,49 @@ def half_secret(secret: str = APP_SECRET) -> str:
 
 HALF = half_secret()   # "EUProd89ec59274d23491084af"
 
+def _flatten_value(v):
+    """Serializza un valore-ARRAY annidato come fa il SDK nativo (a(JSONObject) in
+    ldkb.smali) PRIMA del calcolo del sign. Per ogni elemento:
+      - oggetto  → 'chiave=valore&' con chiavi ordinate alfab. (valori vuoti saltati),
+                   e la sua eventuale sotto-lista appiattita ricorsivamente;
+      - scalare  → str(elemento) concatenato SENZA separatore (es. [1,2,3] → '123').
+    Il '&' finale viene rimosso. Verificato byte-per-byte su 4/4 envelope reali
+    `chargeAppointControl` (cycleData [1..7] → '1234567')."""
+    if isinstance(v, list):
+        sb = ""
+        for el in v:
+            if isinstance(el, dict):
+                fl = _flatten_obj(el)
+                for k in sorted(fl.keys()):
+                    val = fl[k]
+                    if val is None or val == "":
+                        continue
+                    sb += f"{k}={val}&"
+            else:
+                sb += str(el)
+        if sb.endswith("&"):
+            sb = sb[:-1]
+        return sb
+    return v
+
+
+def _flatten_obj(obj: dict) -> dict:
+    """Copia dell'oggetto con i soli valori-lista appiattiti (vedi _flatten_value).
+    I valori scalari restano invariati → per i body PIATTI è un no-op (l'algoritmo
+    storico resta identico, verificato su 63/63 envelope piatti)."""
+    return {k: (_flatten_value(v) if isinstance(v, list) else v) for k, v in obj.items()}
+
+
 def build_sign(params: dict, ts_ms: int, half: str = HALF) -> str:
-    """Replica b(Map,J,String) per tagEncrypt='1': SHA-256 MAIUSCOLO."""
+    """Replica b(Map,J,String) per tagEncrypt='1': SHA-256 MAIUSCOLO.
+
+    I valori-array annidati (es. `chargeAppointPlans`) vengono prima appiattiti come
+    fa il SDK nativo (_flatten_obj); senza array il comportamento è invariato. NB:
+    appiattisce una COPIA → il body restituito da sign_body conserva l'array reale."""
+    flat = _flatten_obj(params)
     parts = []
-    for k in sorted(params.keys()):              # Arrays.sort sulle chiavi
-        v = params[k]
+    for k in sorted(flat.keys()):                # Arrays.sort sulle chiavi
+        v = flat[k]
         if v is None or v == "":                 # null/"" saltati
             continue
         parts.append(f"{k}={v}&")

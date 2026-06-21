@@ -6,6 +6,21 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+- **Il clima ora si imposta alla temperatura che vuoi.** Prima c'era un semplice
+  interruttore che accendeva il clima fisso a 21°; ora trovi un vero **termostato**:
+  scegli la temperatura desiderata (da 16° a 30°) e l'auto la applica, riscaldando o
+  raffreddando l'abitacolo. Puoi anche regolare per quanti minuti deve restare acceso.
+  ⚠️ Dopo l'aggiornamento, al posto del vecchio interruttore "Clima" comparirà il nuovo
+  termostato "Clima": se avevi messo il vecchio interruttore in una schermata, sostituiscilo
+  con il nuovo (il vecchio resterà "non disponibile" e si può togliere).
+- **Comandi per la ricarica elettrica.** Due nuovi interruttori: **"Ricarica"** per
+  avviare o fermare subito la ricarica, e **"Ricarica programmata"** per far caricare
+  l'auto in una fascia oraria scelta (imposti ora di inizio e durata con i due cursori
+  dedicati). Funzionano quando l'auto è collegata alla colonnina/wallbox.
+- **I sedili e gli sbrinamenti non si toccano più accendendo il clima.** Il nuovo
+  termostato agisce solo sull'aria: riscaldamento sedili, volante e sbrinamenti restano
+  controlli a parte e non vengono spenti quando accendi o spegni il clima.
+
 ## v1.2.0 — 2026-06-21
 
 - **Comandi anche per i sedili passeggero e posteriori.** Finora potevi accendere e

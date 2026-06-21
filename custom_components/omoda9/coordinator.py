@@ -417,10 +417,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         A.COUNTRY_ID = os.environ.get("OMODA_COUNTRY_ID", A.COUNTRY_ID)
 
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
-    async def async_send_command(self, key: str) -> str:
-        return await self.hass.async_add_executor_job(self._send_command, key)
+    async def async_send_command(self, key: str, params: dict | None = None) -> str:
+        return await self.hass.async_add_executor_job(self._send_command, key, params)
 
-    def _send_command(self, key: str) -> str:
+    def _send_command(self, key: str, params: dict | None = None) -> str:
         self._bind_core()
         import commands as CMD  # core/ è sul path (vedi __init__)
         msgs: list[str] = []
@@ -430,7 +430,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             _LOGGER.info("[cmd] %s", m)
             self._update({"cmd_status": str(m)[:255]})
 
-        CMD.send(key, emit=emit)
+        CMD.send(key, emit=emit, params=params)
         return msgs[-1] if msgs else "inviato"
 
     async def async_wake(self) -> None:

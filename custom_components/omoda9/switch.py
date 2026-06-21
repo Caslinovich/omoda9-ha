@@ -11,6 +11,8 @@ subito anche nello stato ottimistico, oltre che dai campi reali quando arrivano.
 """
 from __future__ import annotations
 
+import ast
+
 from homeassistant.components.switch import (
     ENTITY_ID_FORMAT,
     SwitchDeviceClass,
@@ -27,9 +29,10 @@ from .entity import Omoda9Entity, Omoda9OptimisticMixin, field_on
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coord = hass.data[DOMAIN][entry.entry_id]
-    clima = Omoda9ComfortSwitch(
-        coord, "Omoda9 Clima", "clima", "frontHVACState",
-        "clima_on", "clima_off", "mdi:air-conditioner")
+    # NB: il clima NON è più qui → è una climate entity (climate.py) con temperatura
+    # impostabile. Restano comfort/sedili/sbrinamenti + i due switch ricarica EV.
+    ricarica = Omoda9ChargeSwitch(coord)
+    ricarica_prog = Omoda9ScheduledChargeSwitch(coord)
     parabrezza = Omoda9ComfortSwitch(
         coord, "Omoda9 Sbrinamento parabrezza", "frontWindshieldHeat", "frontWindshieldHeat",
         "defrost_parabrezza", "defrost_parabrezza_off", "mdi:car-defrost-front")
@@ -70,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                         (psx_caldo, psx_aria), (pdx_caldo, pdx_aria)):
         caldo._exclusive = aria
         aria._exclusive = caldo
-    add([clima, parabrezza, lunotto, volante,
+    add([ricarica, ricarica_prog, parabrezza, lunotto, volante,
          sedile_caldo, sedile_aria, pass_caldo, pass_aria,
          psx_caldo, psx_aria, pdx_caldo, pdx_aria])
 
@@ -118,3 +121,91 @@ class Omoda9ComfortSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, Res
 
     async def async_turn_off(self, **kwargs) -> None:
         await self._run_command(self._off_cmd, False)
+
+
+class Omoda9ChargeSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, RestoreEntity):
+    """Ricarica IMMEDIATA on/off (chargeStartStopControl, controlType 1/0).
+
+    Su questo canale l'auto NON pubblica uno stato "in ricarica" → lo switch è
+    ottimistico: dopo il comando mostra subito il target e al riavvio ripristina
+    l'ultimo stato noto. La spina collegata è il binary_sensor `Spina ricarica`."""
+
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_icon = "mdi:battery-charging"
+
+    def __init__(self, coord) -> None:
+        super().__init__(coord, "Omoda9 Ricarica", "ricarica", entity_id_format=ENTITY_ID_FORMAT)
+        self._restored: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state in ("on", "off"):
+            self._restored = last.state == "on"
+
+    @property
+    def is_on(self) -> bool | None:
+        if self._opt_value is not None:
+            return self._opt_value
+        return self._restored
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._run_command("ricarica_start", True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._run_command("ricarica_stop", False)
+
+
+class Omoda9ScheduledChargeSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, RestoreEntity):
+    """Ricarica PROGRAMMATA on/off (chargeAppointControl, body con array annidato).
+
+    Quando si accende, costruisce il piano dalle preferenze (number ora-inizio/durata,
+    tutti i giorni) e invia mainSwitch=1 + piano attivo; spegnendo invia mainSwitch=0.
+    Lo stato reale arriva dalla telemetria `chargeAppointPlans` (switchStatus del piano)."""
+
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coord) -> None:
+        super().__init__(coord, "Omoda9 Ricarica programmata", "ricarica_programmata",
+                         entity_id_format=ENTITY_ID_FORMAT)
+        self._restored: bool | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state in ("on", "off"):
+            self._restored = last.state == "on"
+
+    def _live_on(self) -> bool | None:
+        raw = self.coordinator.data.get("fields", {}).get("chargeAppointPlans")
+        if not raw:
+            return None
+        try:
+            plans = ast.literal_eval(raw) if isinstance(raw, str) else raw
+            if plans:
+                return field_on(plans[0].get("switchStatus"))
+        except (ValueError, SyntaxError, AttributeError, IndexError, TypeError):
+            return None
+        return None
+
+    @property
+    def is_on(self) -> bool | None:
+        if self._opt_value is not None:
+            return self._opt_value
+        live = self._live_on()
+        return live if live is not None else self._restored
+
+    def _plan(self, switch_status: int) -> dict:
+        hour = int(getattr(self.coordinator, "charge_start_hour", 8) or 8)
+        dur_h = int(getattr(self.coordinator, "charge_duration_hours", 6) or 6)
+        return {"cycleData": [1, 2, 3, 4, 5, 6, 7], "startTime": hour * 60,
+                "switchStatus": switch_status, "timeConsuming": dur_h * 60}
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._run_command("ricarica_prog_on", True,
+                                {"mainSwitch": 1, "chargeAppointPlans": [self._plan(1)]})
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._run_command("ricarica_prog_off", False,
+                                {"mainSwitch": 0, "chargeAppointPlans": [self._plan(0)]})

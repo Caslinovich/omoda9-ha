@@ -47,12 +47,14 @@ MINT_TASKID = os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false",
 # I campi comuni (clientType/seq/taskId/vin/appId/sign) li aggiunge send().
 COMMANDS = [
     # — Clima —
+    # clima ON/OFF: temperatura e durata sono PARAMETRICHE (le passa la climate entity via
+    # `params`); i valori nel body sono solo i default se invocato senza override.
     ("clima_on",  {"endpoint": "airControl",
                    "body": {"airControlType": "1", "airType": "1", "temperature": "21.0", "times": "15"},
-                   "name": "Clima ON (21°, 15min)", "icon": "mdi:air-conditioner", "group": "Clima"}),
+                   "name": "Clima acceso", "icon": "mdi:air-conditioner", "group": "Clima"}),
     ("clima_off", {"endpoint": "airControl",
                    "body": {"airControlType": "0", "airType": "1", "temperature": "21.0", "times": "15"},
-                   "name": "Clima OFF", "icon": "mdi:air-conditioner", "group": "Clima"}),
+                   "name": "Clima spento", "icon": "mdi:air-conditioner", "group": "Clima"}),
     ("defrost_parabrezza", {"endpoint": "frontWindshieldControl",
                    "body": {"frontWindshieldHeat": "1", "times": "15"},
                    "name": "Sbrina parabrezza", "icon": "mdi:car-defrost-front", "group": "Clima"}),
@@ -145,9 +147,35 @@ COMMANDS = [
     ("tetto_chiudi", {"endpoint": "skylightControl", "body": {"controlType": "0", "skylightType": "1"},
                    "name": "Chiudi tetto", "icon": "mdi:car-select", "group": "Finestrini e tetto"}),
 
+    # — Ricarica EV —
+    # Ricarica IMMEDIATA avvio/stop (endpoint chargeStartStopControl, bean CVChargeStartStopBean
+    # → solo `controlType`; 1=avvia, 0=ferma, stessa convenzione di tutti i *Control).
+    ("ricarica_start", {"endpoint": "chargeStartStopControl", "body": {"controlType": "1"},
+                   "name": "Avvia ricarica", "icon": "mdi:battery-charging", "group": "Ricarica"}),
+    ("ricarica_stop", {"endpoint": "chargeStartStopControl", "body": {"controlType": "0"},
+                   "name": "Ferma ricarica", "icon": "mdi:battery-off", "group": "Ricarica"}),
+    # Ricarica PROGRAMMATA (chargeAppointControl) — body con ARRAY annidato `chargeAppointPlans`
+    # (la firma annidata è risolta in tsp_sign, verificata su 4/4 envelope reali). mainSwitch =
+    # interruttore generale; il piano (orario/durata/giorni) lo passa l'entità via `params`.
+    # cycleData [1..7] = giorni; startTime/timeConsuming in MINUTI; switchStatus = piano attivo.
+    ("ricarica_prog_on", {"endpoint": "chargeAppointControl",
+                   "body": {"mainSwitch": 1, "chargeAppointPlans": [
+                       {"cycleData": [1, 2, 3, 4, 5, 6, 7], "startTime": 480,
+                        "switchStatus": 1, "timeConsuming": 360}]},
+                   "name": "Ricarica programmata ON", "icon": "mdi:calendar-clock", "group": "Ricarica"}),
+    ("ricarica_prog_off", {"endpoint": "chargeAppointControl",
+                   "body": {"mainSwitch": 0, "chargeAppointPlans": [
+                       {"cycleData": [1, 2, 3, 4, 5, 6, 7], "startTime": 480,
+                        "switchStatus": 0, "timeConsuming": 360}]},
+                   "name": "Ricarica programmata OFF", "icon": "mdi:calendar-remove", "group": "Ricarica"}),
+
     # — Altro —
     ("trova_auto", {"endpoint": "findCar", "body": {},
                    "name": "Trova auto (lampeggio)", "icon": "mdi:car-search", "group": "Altro"}),
+    # NB: remoteStart (avvio motore da remoto) RIMOSSO: provato dal vivo (2026-06-21) →
+    # l'auto risponde A00084 "No vehicle control command permission" (permesso negato per
+    # questo veicolo). Inutile esporre un pulsante che fallisce sempre. Il bean
+    # CVRemoteStartReqBean (senza campi) resta noto se in futuro il permesso cambiasse.
     # Richiesta posizione GPS: NON attua nulla; l'auto risponde con un push MQTT serviceType 1301
     # (lat/lon) che il bridge cabla nel device_tracker. È il metodo dell'app per la posizione a riposo.
     ("localizza", {"endpoint": "vehicleLocation", "body": {},
@@ -244,8 +272,12 @@ def get_taskid(tuid, emit=lambda m: None):
     return None, "none"
 
 
-def send(cmd_key, emit=lambda m: None):
+def send(cmd_key, emit=lambda m: None, params=None):
     """Invia un comando. emit(str) riceve i passaggi (per pubblicarli su HA).
+       `params` (opzionale) = override/aggiunte al body del catalogo PRIMA dei campi
+       comuni → permette i comandi parametrici (clima: temperature/times; ricarica
+       immediata: controlType; ricarica programmata: mainSwitch + chargeAppointPlans).
+       I campi di sistema (clientType/seq/taskId/vin) restano sempre quelli coniati qui.
        Ritorna una stringa-esito leggibile."""
     c = CMD_MAP.get(cmd_key)
     if not c:
@@ -264,6 +296,8 @@ def send(cmd_key, emit=lambda m: None):
 
     ts = int(time.time() * 1000)
     body = dict(c["body"])
+    if params:
+        body.update(params)        # override parametrico (temperatura/durata/controlType/piano)
     body.update({"clientType": "1", "seq": f"{VIN}-{ts}", "taskId": taskid, "vin": VIN})
     m = tsp_sign.sign_body(body, ts)
     payload = json.dumps(m, separators=(",", ":"), ensure_ascii=False).encode()
