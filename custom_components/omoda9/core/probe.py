@@ -98,11 +98,14 @@ def probe_once(publish, force=False, on_data=None):
         c1, c2, c3 = W._code_of(j1), W._code_of(j2), W._code_of(j3)
         got1, got2, got3 = W._has_live_data(j1), W._has_live_data(j2), W._has_live_data(j3)
 
-        # data combinato: realtime ha priorità (lat/lon/batteria), travel/location aggiungono campi extra
+        # data combinato: realtime ha priorità (lat/lon/batteria), travel/location aggiungono campi extra.
+        # Il payload sta sotto "data" o "body" a seconda dell'endpoint (realtime → "body"): W._payload
+        # li gestisce entrambi, altrimenti i 84 campi realtime venivano persi.
         data = {}
         for src, got in ((j2, got2), (j3, got3), (j1, got1)):
-            if got and isinstance(src.get("data"), dict):
-                data.update(src["data"])
+            payload = W._payload(src)
+            if got and isinstance(payload, dict):
+                data.update(payload)
         rich = _rich(data)
         _log({"event": "probe", "ok": True, "realtime_code": c1, "location_code": c2,
               "travel_code": c3, "got_realtime": got1, "got_location": got2, "got_travel": got3,

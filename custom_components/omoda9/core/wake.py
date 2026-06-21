@@ -190,8 +190,21 @@ def _signed_post(ut: str, path: str, params: dict):
 def _code_of(j):
     return j.get("code") if isinstance(j, dict) else j
 
+def _payload(j):
+    """Payload utile della risposta tspconsole: sotto "data" su alcuni endpoint e
+    sotto "body" su altri (es. /asr/manager/realtime → "body" con 84 campi). Ritorna
+    il primo dict non vuoto, o None."""
+    if not isinstance(j, dict):
+        return None
+    for k in ("data", "body"):
+        v = j.get(k)
+        if isinstance(v, dict) and v:
+            return v
+    return None
+
+
 def _has_live_data(j):
-    return isinstance(j, dict) and isinstance(j.get("data"), dict) and bool(j.get("data"))
+    return _payload(j) is not None
 
 
 # ───────────────────────── orchestrazione del pulsante ──────────────────────────
@@ -266,7 +279,7 @@ def _do_wake_inner(publish, is_awake, send_sms):
         if _has_live_data(j1) or _has_live_data(j2):
             publish("🟢 Auto ONLINE — dati realtime ricevuti")
             return {"ok": True, "online": True, "code": code, "via": "rest",
-                    "data": (j1 if _has_live_data(j1) else j2).get("data")}
+                    "data": _payload(j1) or _payload(j2)}
         secs_left = (POLL_N - i - 1) * POLL_EVERY
         publish(f"… in attesa risveglio ({_code_of(j1)}) — ancora ~{secs_left}s")
         time.sleep(POLL_EVERY)
