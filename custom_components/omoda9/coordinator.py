@@ -22,6 +22,7 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -74,6 +75,11 @@ SENSORS = [
 ]
 META = {s["key"]: s for s in SENSORS}
 
+# [MED] Campi "geo" ammessi in self.position (push 1301 / sonda realtime). Si tiene
+# SOLO la geolocalizzazione: batteria/velocità/online vivono in self.data["realtime"].
+GEO_KEYS = ("lat", "lon", "latitude", "longitude", "speed", "vehicleSpeed",
+            "direction", "heading", "altitude", "gpsTime", "positionTime")
+
 
 class Omoda9Coordinator(DataUpdateCoordinator):
     """Tiene la connessione MQTT all'auto e lo stato; espone azioni via core/."""
@@ -94,26 +100,31 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.certs_src = cfg.get(CONF_CERTS_SRC) or ""
         self.tsp_host = cfg[CONF_TSP_HOST]
         self.pin = cfg.get(CONF_PIN, "")
+        self.bff = cfg[CONF_BFF]
+        self.email = cfg.get(CONF_EMAIL, "")
 
-        # env per i moduli core/ (li importeremo DOPO aver settato l'ambiente)
-        os.environ.setdefault("VIN", self.vin)
-        os.environ.setdefault("TUSERID", self.tuserid)
-        os.environ.setdefault("CHANNEL_ID", self.channel_id)
-        os.environ.setdefault("OMODA_TOKEN_PATH", self.token_path)
-        os.environ.setdefault("OMODA_BFF", cfg[CONF_BFF])
-        os.environ.setdefault("TSP_HOST", cfg[CONF_TSP_HOST])
-        if cfg.get(CONF_PIN):
-            os.environ.setdefault("OMODA_PIN", cfg[CONF_PIN])
-        if cfg.get(CONF_EMAIL):
-            os.environ.setdefault("OMODA_EMAIL", cfg[CONF_EMAIL])
+        # env per i moduli core/ (li importeremo DOPO aver settato l'ambiente).
+        # [H1] Assegnazione DIRETTA (non setdefault): con più entry/reload nello stesso
+        # processo, setdefault terrebbe i valori del PRIMO entry → config stale.
+        os.environ["VIN"] = self.vin
+        os.environ["TUSERID"] = self.tuserid
+        os.environ["CHANNEL_ID"] = self.channel_id
+        os.environ["OMODA_TOKEN_PATH"] = self.token_path
+        os.environ["OMODA_BFF"] = self.bff
+        os.environ["TSP_HOST"] = self.tsp_host
+        if self.pin:
+            os.environ["OMODA_PIN"] = self.pin
+        if self.email:
+            os.environ["OMODA_EMAIL"] = self.email
 
         self._car = None  # paho mqtt.Client (importato in _connect_car, executor)
         self._keepalive_unsub = None  # cancella il timer keep-alive sessione
         self._fields: dict[str, str] = {}
+        self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
         self.position: dict | None = None
         self.otp_code: str = ""   # impostato dall'entità text «Codice OTP», letto da confirm
-        self.data = {"fields": self._fields, "position": None,
+        self.data = {"fields": {}, "position": None,
                      "awake": False, "car_connected": False,
                      "session_ok": None, "session_detail": "",
                      # — sensori diagnostici (parità col bridge) —
@@ -135,7 +146,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return await self.hass.async_add_executor_job(self._provision_certs)
 
     def _provision_certs(self) -> tuple[bool, str]:
-        os.makedirs(self.certs_dir, exist_ok=True)
+        os.makedirs(self.certs_dir, mode=0o700, exist_ok=True)
 
         def _have_required() -> bool:
             return all(os.path.isfile(os.path.join(self.certs_dir, f)) for f in REQUIRED_CERTS)
@@ -159,14 +170,18 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         try:
             from .cert_bundle import decrypt_region
             certs = decrypt_region(self.car_host)
-        except Exception:  # noqa: BLE001
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[certs] bundle non disponibile per %s: %s", self.car_host, err)
             certs = None
         if certs:
-            for name, data in certs.items():
-                p = os.path.join(self.certs_dir, name)
-                with open(p, "wb") as fh:
-                    fh.write(data)
-                os.chmod(p, 0o600)
+            try:
+                for name, data in certs.items():
+                    p = os.path.join(self.certs_dir, name)
+                    with open(p, "wb") as fh:
+                        fh.write(data)
+                    os.chmod(p, 0o600)
+            except OSError as err:
+                return False, f"scrittura cert dal bundle fallita in {self.certs_dir}: {err}"
             if _have_required():
                 return True, f"cert auto-provisioned ({self.car_host})"
 
@@ -237,54 +252,82 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         c.on_connect = on_connect
         c.on_disconnect = on_disconnect
         c.on_message = self._on_car_message
-        c.connect(self.car_host, self.car_port, keepalive=60)
+        # [H4] backoff di riconnessione (evita lo storming a 1s di default su rete giù)
+        c.reconnect_delay_set(min_delay=1, max_delay=120)
+        # [H4] il connect iniziale può fallire (DNS/cert/rete) → ConfigEntryNotReady,
+        #      così HA riprova il setup invece di lasciare il client appeso.
+        try:
+            c.connect(self.car_host, self.car_port, keepalive=60)
+        except Exception as err:  # noqa: BLE001
+            raise ConfigEntryNotReady(
+                f"connessione MQTT auto fallita ({self.car_host}:{self.car_port}): {err}"
+            ) from err
         c.loop_start()
         self._car = c
 
     def async_stop(self) -> None:
+        """[MED] Spegnimento MQTT. Bloccante (loop_stop fa join del thread paho) →
+        chiamato in executor da async_unload_entry. `disconnect()` PRIMA di
+        `loop_stop()`: così il loop processa il CONNACK/DISCONNECT e il thread esce
+        pulito senza un join che attende il keepalive."""
         if self._keepalive_unsub is not None:
             self._keepalive_unsub()
             self._keepalive_unsub = None
         if self._car is not None:
-            self._car.loop_stop()
-            self._car.disconnect()
+            try:
+                self._car.disconnect()
+                self._car.loop_stop()
+            except Exception as err:  # noqa: BLE001 — lo stop non deve far fallire l'unload
+                _LOGGER.debug("[auto] errore in async_stop: %s", err)
             self._car = None
 
     def _on_car_message(self, c, u, msg) -> None:
         """Parsing identico a ha_bridge.car_on_message (thread paho → push verso HA)."""
         try:
             obj = json.loads(msg.payload.decode("utf-8"))
-        except Exception:
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[auto] payload MQTT non decodificabile: %s", err)
             return
         content = obj.get("content", obj)
         data = content.get("data", {}) if isinstance(content, dict) else {}
+        if not isinstance(data, dict):
+            data = {}
+        svc = str(content.get("serviceType")) if isinstance(content, dict) else ""
         now = time.time()
         now_dt = dt_util.utcnow()
-        _LOGGER.debug("[auto] messaggio ricevuto: %d campi", len(data) if isinstance(data, dict) else 0)
+        _LOGGER.debug("[auto] messaggio ricevuto (svc %s): %d campi", svc or "?", len(data))
 
         patch = {"last_seen": now_dt}
 
-        # 1301 = push posizione (lat/lon) → device_tracker
-        if isinstance(data, dict) and "lat" in data and "lon" in data:
-            self.position = {"lat": data.get("lat"), "lon": data.get("lon"), **data}
+        # [MED] serviceType 1301 = push POSIZIONE (lat/lon) → device_tracker. Si
+        # discrimina sul TIPO messaggio (non sulla sola presenza di lat/lon) e si
+        # tiene in position SOLO la geolocalizzazione (no **data).
+        if svc == "1301" and "lat" in data and "lon" in data:
+            geo = {k: data[k] for k in GEO_KEYS if k in data}
+            with self._state_lock:
+                self.position = geo
+                pos_copy = dict(geo)
+            patch["position"] = pos_copy
             patch["last_pos_fix"] = now_dt
 
-        was_awake = bool(self._last_msg_ts) and (now - self._last_msg_ts) < self.awake_window
-        self._last_msg_ts = now
-        for k, v in data.items():
-            if k != "time":
-                self._fields[k] = str(v)
+        # [H2] _fields/_last_msg_ts toccati anche dall'executor → sotto lock; emetti una COPIA
+        with self._state_lock:
+            was_awake = bool(self._last_msg_ts) and (now - self._last_msg_ts) < self.awake_window
+            self._last_msg_ts = now
+            for k, v in data.items():
+                if k != "time":
+                    self._fields[k] = str(v)
+            fields_copy = dict(self._fields)
 
-        patch.update({
-            "fields": dict(self._fields),
-            "position": self.position,
-            "awake": True,
-        })
+        patch.update({"fields": fields_copy, "awake": True})
         self._update(patch)
 
-        # fronte di risveglio → una sonda realtime (posizione/batteria), sola lettura
+        # [H3] fronte di risveglio → una sonda realtime (sola lettura). Lo schedule del
+        # task DEVE avvenire sul loop: dal thread paho usa call_soon_threadsafe.
         if not was_awake:
-            self.hass.add_job(self.async_probe())
+            self.hass.loop.call_soon_threadsafe(
+                lambda: self.hass.async_create_task(self.async_probe())
+            )
 
     def _update(self, patch: dict) -> None:
         """Aggiorna self.data e notifica le entità (thread-safe dal thread paho)."""
@@ -299,18 +342,34 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         """Inietta la config di QUESTO entry nei global dei moduli core/.
 
         I moduli core/ leggono VIN/PIN/token-path/TSP da env A IMPORT-TIME: se il
-        config flow li ha già importati (con VIN ignoto), i loro global resterebbero
-        stale nello stesso processo. Qui li forziamo ai valori dell'entry → robusto
-        rispetto all'ordine di import. Idempotente, eseguito in executor."""
-        import wake, commands, probe
+        config flow li ha già importati (con VIN ignoto), o se un ALTRO entry ha
+        importato per primo, i loro global resterebbero stale nello stesso processo.
+        [H1] Qui li forziamo TUTTI ai valori di QUESTO entry → robusto rispetto
+        all'ordine di import e a entry/reload multipli. Idempotente, in executor."""
+        import wake, commands, probe, session
+        import omoda_auth as A
+        # env per i moduli che lo rileggono a runtime (wake._token_path, omoda.py, …)
+        os.environ["OMODA_TOKEN_PATH"] = self.token_path
+        os.environ["VIN"] = self.vin
+        os.environ["TUSERID"] = self.tuserid
+        os.environ["CHANNEL_ID"] = self.channel_id
+        # global per-account dei moduli core/
         wake.VIN = self.vin
         wake.TSP_HOST = self.tsp_host
+        wake.TOKEN_PATH = self.token_path
         commands.VIN = self.vin
         commands.PIN = self.pin
         commands.TSP_HOST = self.tsp_host
+        # MINT_TASKID dal valore d'ambiente (default 1 = i pulsanti coniano il proprio
+        # taskId, fix S26) — rivalutato qui per non restare stale tra entry/reload.
+        commands.MINT_TASKID = os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false", "no")
+        # taskId file nella config dir per-VIN (sopravvive agli update HACS, niente stale condiviso)
+        commands.TASKID_FILE = self.hass.config.path(f"{DOMAIN}_{self.vin}_taskid.txt")
         probe.VIN = self.vin
-        os.environ["OMODA_TOKEN_PATH"] = self.token_path
-        os.environ["VIN"] = self.vin
+        session.EMAIL = self.email
+        A.BFF = self.bff
+        A.CHANNEL_ID = self.channel_id
+        A.COUNTRY_ID = os.environ.get("OMODA_COUNTRY_ID", A.COUNTRY_ID)
 
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
     async def async_send_command(self, key: str) -> str:
@@ -357,11 +416,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         PROBE.probe_once(emit, on_data=self._on_probe_data)
 
     def _on_probe_data(self, data: dict) -> None:
-        """Dati realtime (GPS/batteria/velocità/online) dalla sonda → stato posizione."""
-        patch: dict = {"realtime": data}
-        if "lat" in data and "lon" in data:
-            self.position = {**(self.position or {}), **data}
-            patch["position"] = self.position
+        """Dati realtime (GPS/batteria/velocità/online) dalla sonda → stato posizione.
+
+        Gira nel thread executor: gli accessi a self.position sono serializzati col
+        lock e si emette sempre una COPIA (no condivisione per riferimento)."""
+        patch: dict = {"realtime": dict(data) if isinstance(data, dict) else data}
+        if isinstance(data, dict) and "lat" in data and "lon" in data:
+            geo = {k: data[k] for k in GEO_KEYS if k in data}
+            with self._state_lock:
+                self.position = {**(self.position or {}), **geo}
+                pos_copy = dict(self.position)
+            patch["position"] = pos_copy
             patch["last_pos_fix"] = dt_util.utcnow()
         self._update(patch)
 

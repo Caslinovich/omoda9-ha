@@ -41,7 +41,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # stato sessione iniziale + avvio connessione MQTT all'auto
     await coordinator.async_check_session()
-    await coordinator.async_start()
+    # [H4] se il connect MQTT iniziale fallisce, async_start solleva ConfigEntryNotReady:
+    #      ripuliamo hass.data (niente coordinator appeso) e rilanciamo → HA ritenta il setup.
+    try:
+        await coordinator.async_start()
+    except Exception:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        await hass.async_add_executor_job(coordinator.async_stop)
+        raise
     # keep-alive: refresh sessione periodico per non far scadere il token da fermi
     coordinator.async_start_keepalive()
 
@@ -54,5 +61,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     coordinator = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if coordinator is not None:
-        coordinator.async_stop()
+        # [MED] async_stop è bloccante (loop_stop fa join del thread paho) → executor,
+        #       per non bloccare l'event loop durante l'unload.
+        await hass.async_add_executor_job(coordinator.async_stop)
     return ok
