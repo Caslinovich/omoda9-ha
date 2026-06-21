@@ -6,6 +6,17 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.5 — 2026-06-21
+
+- **"Raffredda tutto" e "Riscalda tutto" ora funzionano davvero.** Prima questi due
+  pulsanti usavano un comando "tutto-in-uno" che la tua auto non riesce a eseguire: dava un
+  finto "comando inviato" e subito dopo un errore, e il clima non partiva. Ora usano il
+  comando del climatizzatore semplice (lo stesso, affidabile, del termostato "Clima"):
+  **"Raffredda tutto"** accende l'aria al massimo freddo, **"Riscalda tutto"** al massimo
+  caldo (e accende anche gli sbrinatori di parabrezza e lunotto). Il riscaldamento/la
+  ventilazione dei **sedili** non fanno più parte di questi due pulsanti — l'auto non li
+  accettava in quel comando — ma restano comandabili dai loro interruttori dedicati.
+
 ## v1.5.4 — 2026-06-21
 
 - **Niente più comandi accavallati se premi troppe volte.** L'auto esegue **un comando
