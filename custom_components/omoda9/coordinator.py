@@ -144,7 +144,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.poll_charging_min = int(opt.get(CONF_POLL_CHARGING, DEFAULT_POLL_CHARGING_MIN))
         self._poll_unsub = None       # cancella il timer del poll (async_call_later)
         self._poll_busy = False       # evita sovrapposizioni tra cicli
-        self.poll_enabled = True      # interruttore "Aggiornamento automatico" (switch)
+        # interruttore "Aggiornamento automatico" (switch): SPENTO di default — il poll
+        # sveglia l'auto, quindi parte solo se l'utente lo accende esplicitamente. La
+        # scelta dell'utente viene poi ricordata tra i riavvii (switch RestoreEntity).
+        self.poll_enabled = False
         self._fields: dict[str, str] = {}
         self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
