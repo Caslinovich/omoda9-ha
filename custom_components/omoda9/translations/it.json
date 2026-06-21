@@ -9,6 +9,9 @@
           "pin": "PIN di controllo veicolo",
           "bff": "Endpoint BFF (regione)",
           "tsp_host": "Host console TSP (regione)",
+          "car_mqtt_host": "Host broker MQTT del veicolo (regione)",
+          "car_mqtt_port": "Porta broker MQTT del veicolo (regione)",
+          "channel_id": "Channel ID (regione)",
           "certs_src": "Cartella coi certificati mutual-TLS da importare (opzionale)"
         }
       },
@@ -33,7 +36,8 @@
       "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account."
     },
     "abort": {
-      "already_configured": "Questo veicolo (VIN) è già configurato."
+      "already_configured": "Questo veicolo (VIN) è già configurato.",
+      "token_move_failed": "Impossibile salvare il token di autenticazione. Controlla i permessi della cartella di configurazione di Home Assistant e riprova."
     }
   }
 }

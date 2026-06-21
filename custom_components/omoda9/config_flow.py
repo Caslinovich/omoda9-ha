@@ -13,6 +13,7 @@ Flusso:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -21,11 +22,15 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import AbortFlow
 
 from .const import (
     DOMAIN, CONF_EMAIL, CONF_PIN, CONF_VIN, CONF_TUSERID,
-    CONF_BFF, CONF_TSP_HOST, CONF_CERTS_SRC, CONF_CHANNEL_ID, DEFAULTS,
+    CONF_BFF, CONF_TSP_HOST, CONF_CERTS_SRC, CONF_CHANNEL_ID,
+    CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, DEFAULTS,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 _CORE = os.path.join(os.path.dirname(__file__), "core")
 if _CORE not in sys.path:
@@ -98,15 +103,31 @@ def _discover(hass: HomeAssistant, data: dict) -> tuple[bool, str, list[str], st
         return False, "", [], f"errore scoperta veicoli: {type(e).__name__}"
 
 
-def _finalize_token(hass: HomeAssistant, vin: str) -> None:
-    """Sposta il token 'pending' nella token-path per-VIN definitiva."""
+def _finalize_token(hass: HomeAssistant, vin: str) -> bool:
+    """Sposta il token 'pending' nella token-path per-VIN definitiva.
+
+    Ritorna True se il token è in posizione (spostato ora o già presente),
+    False se lo spostamento fallisce: in tal caso il flow va fatto fallire,
+    perché senza token il coordinator non potrebbe autenticarsi."""
     pend = _pending_token_path(hass)
     dest = hass.config.path(f"{DOMAIN}_{vin}_token.json")
     try:
         if os.path.isfile(pend):
             os.replace(pend, dest)
-    except OSError:
-        pass
+        return os.path.isfile(dest)
+    except OSError as e:
+        _LOGGER.error("Omoda9: impossibile spostare il token in %s: %s", dest, e)
+        return False
+
+
+def _cleanup_pending(hass: HomeAssistant) -> None:
+    """Rimuove un eventuale *_pending_token.json orfano (OTP non andato a buon fine/abort)."""
+    pend = _pending_token_path(hass)
+    try:
+        if os.path.isfile(pend):
+            os.remove(pend)
+    except OSError as e:  # noqa: BLE001
+        _LOGGER.debug("Omoda9: cleanup pending token fallito: %s", e)
 
 
 class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -136,6 +157,11 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Solo per regioni diverse dall'Europa / setup avanzato (default EU).
             vol.Optional(CONF_BFF, default=DEFAULTS[CONF_BFF]): str,
             vol.Optional(CONF_TSP_HOST, default=DEFAULTS[CONF_TSP_HOST]): str,
+            # Broker MQTT dell'auto + channel id: regione-specifici (default EU). Senza
+            # questi campi un setup non-EU resterebbe agganciato al broker europeo.
+            vol.Optional(CONF_CAR_MQTT_HOST, default=DEFAULTS[CONF_CAR_MQTT_HOST]): str,
+            vol.Optional(CONF_CAR_MQTT_PORT, default=DEFAULTS[CONF_CAR_MQTT_PORT]): vol.Coerce(int),
+            vol.Optional(CONF_CHANNEL_ID, default=DEFAULTS[CONF_CHANNEL_ID]): str,
             vol.Optional(CONF_CERTS_SRC, default=""): str,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
@@ -151,6 +177,8 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     _discover, self.hass, self._data
                 )
                 if not d_ok or not vins:
+                    # Token coniato ma nessun veicolo: il pending è inutilizzabile.
+                    await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
                     errors["base"] = "no_vehicle"
                 else:
                     self._tuserid = tu
@@ -159,6 +187,8 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         return await self._create_entry(vins[0])
                     return await self.async_step_select_vehicle()
             else:
+                # OTP errato/scaduto: butta il pending eventualmente già scritto.
+                await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
                 errors["base"] = "otp_invalid"
 
         schema = vol.Schema({vol.Required("code"): str})
@@ -171,9 +201,21 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="select_vehicle", data_schema=schema)
 
     async def _create_entry(self, vin: str):
+        # Unicità VIN il prima possibile: appena conosciamo il VIN, prima di creare
+        # l'entry. NB: per un account a VIN singolo l'OTP è già stato speso quando
+        # arriviamo qui — il backend non espone il VIN prima dell'autenticazione,
+        # quindi non è possibile abortire come "già configurato" prima dell'OTP.
         await self.async_set_unique_id(vin)
-        self._abort_if_unique_id_configured()
+        try:
+            self._abort_if_unique_id_configured()
+        except AbortFlow:
+            # VIN già configurato: il token appena coniato non serve, rimuovilo.
+            await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
+            raise
         self._data[CONF_VIN] = vin
         self._data[CONF_TUSERID] = self._tuserid
-        await self.hass.async_add_executor_job(_finalize_token, self.hass, vin)
+        ok = await self.hass.async_add_executor_job(_finalize_token, self.hass, vin)
+        if not ok:
+            await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
+            return self.async_abort(reason="token_move_failed")
         return self.async_create_entry(title=f"Omoda 9 ({vin})", data=self._data)
