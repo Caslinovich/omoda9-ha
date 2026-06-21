@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import (
     ENTITY_ID_FORMAT,
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
 )
@@ -61,16 +62,41 @@ class Omoda9FieldSensor(Omoda9Entity, SensorEntity):
         return str(v)
 
 
-class Omoda9Battery(Omoda9Entity, SensorEntity):
+class _Omoda9RestoreSensor(Omoda9Entity, RestoreSensor):
+    """Sensore realtime (batteria/velocità) che sopravvive al riavvio di HA.
+
+    I dati realtime sono in-memory nel coordinator e arrivano SOLO ad auto in
+    marcia (TSP-online) → dopo un restart tornano `unknown`. Ripristiniamo
+    l'ultimo valore noto e lo usiamo come fallback finché non arriva un live."""
+
+    def __init__(self, coord, name: str, suffix: str) -> None:
+        super().__init__(coord, name, suffix, entity_id_format=ENTITY_ID_FORMAT)
+        self._restored = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_sensor_data()
+        if last is not None:
+            self._restored = last.native_value
+
+    def _live_value(self):
+        """Sottoclassi: ritorna il valore dal dato realtime, o None se assente."""
+        raise NotImplementedError
+
+    @property
+    def native_value(self):
+        live = self._live_value()
+        return live if live is not None else self._restored
+
+
+class Omoda9Battery(_Omoda9RestoreSensor):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_native_unit_of_measurement = PERCENTAGE
 
     def __init__(self, coord) -> None:
-        super().__init__(coord, "Omoda9 Batteria", "battery",
-                         entity_id_format=ENTITY_ID_FORMAT)
+        super().__init__(coord, "Omoda9 Batteria", "battery")
 
-    @property
-    def native_value(self):
+    def _live_value(self):
         rt = self.coordinator.data.get("realtime") or {}
         try:
             return float(rt["dumpEnergy"]) if "dumpEnergy" in rt else None
@@ -78,16 +104,14 @@ class Omoda9Battery(Omoda9Entity, SensorEntity):
             return None
 
 
-class Omoda9Speed(Omoda9Entity, SensorEntity):
+class Omoda9Speed(_Omoda9RestoreSensor):
     _attr_native_unit_of_measurement = UnitOfSpeed.KILOMETERS_PER_HOUR
     _attr_icon = "mdi:speedometer"
 
     def __init__(self, coord) -> None:
-        super().__init__(coord, "Omoda9 Velocità", "speed",
-                         entity_id_format=ENTITY_ID_FORMAT)
+        super().__init__(coord, "Omoda9 Velocità", "speed")
 
-    @property
-    def native_value(self):
+    def _live_value(self):
         rt = self.coordinator.data.get("realtime") or {}
         try:
             return float(rt["vehicleSpeed"]) if "vehicleSpeed" in rt else None
