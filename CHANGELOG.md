@@ -6,6 +6,13 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.3 — 2026-06-21
+
+- **L'aggiornamento automatico ora parte SPENTO.** Per non svegliare l'auto senza che tu
+  lo voglia, la funzione "Aggiornamento automatico" è **disattivata di default**: quando la
+  vuoi, accendi tu l'interruttore **"Aggiornamento automatico"** (e regoli gli intervalli
+  dalle opzioni). Resta valido il pulsante "Aggiorna posizione" per un aggiornamento manuale.
+
 ## v1.5.2 — 2026-06-21
 
 - **Aggiornamento automatico dei dati dell'auto.** Ora Home Assistant aggiorna **da solo**,
