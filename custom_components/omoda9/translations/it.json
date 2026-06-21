@@ -3,12 +3,10 @@
     "step": {
       "user": {
         "title": "Omoda 9 / Jaecoo",
-        "description": "Inserisci i dati del tuo account Omoda/Jaecoo. Riceverai un codice OTP via email.",
+        "description": "Inserisci l'email del tuo account Omoda/Jaecoo e il PIN del veicolo. Riceverai un codice OTP via email; VIN e ID account vengono rilevati automaticamente.",
         "data": {
           "email": "Email dell'account",
           "pin": "PIN di controllo veicolo",
-          "vin": "VIN",
-          "tuserid": "tUserId",
           "bff": "Endpoint BFF (regione)",
           "tsp_host": "Host console TSP (regione)",
           "certs_src": "Cartella coi certificati mutual-TLS da importare (opzionale)"
@@ -20,11 +18,19 @@
         "data": {
           "code": "Codice OTP"
         }
+      },
+      "select_vehicle": {
+        "title": "Seleziona veicolo",
+        "description": "Il tuo account ha più di un veicolo. Scegli il VIN da aggiungere.",
+        "data": {
+          "vin": "Veicolo (VIN)"
+        }
       }
     },
     "error": {
-      "otp_send_failed": "Impossibile inviare il codice OTP. Controlla email/credenziali e riprova.",
-      "otp_invalid": "Codice OTP non valido o scaduto."
+      "otp_send_failed": "Impossibile inviare il codice OTP. Controlla email/PIN e riprova.",
+      "otp_invalid": "Codice OTP non valido o scaduto.",
+      "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account."
     },
     "abort": {
       "already_configured": "Questo veicolo (VIN) è già configurato."

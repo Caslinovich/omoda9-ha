@@ -23,23 +23,25 @@ telematica Chery) a **Home Assistant**. Progetto di reverse-engineering.
    categoria **Integration**.
 2. Cerca **Omoda 9 / Jaecoo** → **Download** → **riavvia Home Assistant**.
 3. **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Omoda 9** e
-   segui il config flow (email / PIN / VIN / tUserId / regione → OTP).
+   segui il config flow (bastano **email + PIN**).
 
-### Login (OTP) — interamente in Home Assistant
+### Login (OTP) — interamente in Home Assistant, solo email + PIN
 
-Il login avviene **dal config flow**, in due passaggi, senza strumenti esterni
-né un token pre-esistente:
+Il login avviene **dal config flow**, senza strumenti esterni né un token
+pre-esistente, e chiede **solo l'email e il PIN** dell'account: VIN e tUserId
+vengono **rilevati automaticamente** dal backend.
 
-1. **Primo step:** inserisci `email`, `PIN`, `VIN`, `tUserId` (e, se necessario,
-   gli endpoint regionali). Alla conferma HA risolve **da solo** il captcha del
-   gateway e invia un **codice OTP alla tua email**.
-2. **Secondo step:** inserisci il codice ricevuto → HA conia il token e crea il
-   dispositivo con tutte le entità.
+1. **Primo step:** inserisci `email` e `PIN` (gli endpoint regionali sono
+   opzionali, default Europa). Alla conferma HA risolve **da solo** il captcha
+   del gateway e invia un **codice OTP alla tua email**.
+2. **Secondo step:** inserisci il codice ricevuto → HA conia il token e
+   **scopre** il tUserId e i veicoli dell'account.
+3. **Se l'account ha più auto**, scegli il VIN; se è una sola, viene aggiunta
+   direttamente. Il dispositivo è creato con tutte le entità.
 
-Se per quel `VIN` esiste già un token valido (es. migrazione), l'OTP viene
-saltato. Quando in futuro la sessione scade (tipicamente perché è stata aperta
-l'app ufficiale), usa i pulsanti **«Richiedi codice OTP»** / **«Conferma OTP»**
-(con l'entità *testo* «Codice OTP») per rifare il login senza riconfigurare.
+Quando in futuro la sessione scade (tipicamente perché è stata aperta l'app
+ufficiale), usa i pulsanti **«Richiedi codice OTP»** / **«Conferma OTP»** (con
+l'entità *testo* «Codice OTP») per rifare il login senza riconfigurare.
 
 ## Aggiornamento
 

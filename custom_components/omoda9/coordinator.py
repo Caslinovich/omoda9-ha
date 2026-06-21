@@ -90,6 +90,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.token_path = hass.config.path(f"{DOMAIN}_{self.vin}_token.json")
         self.certs_dir = hass.config.path(f"{DOMAIN}_{self.vin}_certs")
         self.certs_src = cfg.get(CONF_CERTS_SRC) or ""
+        self.tsp_host = cfg[CONF_TSP_HOST]
+        self.pin = cfg.get(CONF_PIN, "")
 
         # env per i moduli core/ (li importeremo DOPO aver settato l'ambiente)
         os.environ.setdefault("VIN", self.vin)
@@ -160,6 +162,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(self._connect_car)
 
     def _connect_car(self) -> None:
+        self._bind_core()
         # import qui (executor): a livello modulo causa un blocking-call warning nel loop.
         import paho.mqtt.client as mqtt
 
@@ -247,11 +250,31 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.data = {**self.data, **patch}
         self.async_set_updated_data(self.data)
 
+    # ───────────────── bind config → moduli core/ ─────────────────
+    def _bind_core(self) -> None:
+        """Inietta la config di QUESTO entry nei global dei moduli core/.
+
+        I moduli core/ leggono VIN/PIN/token-path/TSP da env A IMPORT-TIME: se il
+        config flow li ha già importati (con VIN ignoto), i loro global resterebbero
+        stale nello stesso processo. Qui li forziamo ai valori dell'entry → robusto
+        rispetto all'ordine di import. Idempotente, eseguito in executor."""
+        import wake, commands, probe
+        wake.TOKEN_PATH = self.token_path
+        wake.VIN = self.vin
+        wake.TSP_HOST = self.tsp_host
+        commands.VIN = self.vin
+        commands.PIN = self.pin
+        commands.TSP_HOST = self.tsp_host
+        probe.VIN = self.vin
+        os.environ["OMODA_TOKEN_PATH"] = self.token_path
+        os.environ["VIN"] = self.vin
+
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
     async def async_send_command(self, key: str) -> str:
         return await self.hass.async_add_executor_job(self._send_command, key)
 
     def _send_command(self, key: str) -> str:
+        self._bind_core()
         import commands as CMD  # core/ è sul path (vedi __init__)
         msgs: list[str] = []
 
@@ -267,6 +290,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(self._wake)
 
     def _wake(self) -> None:
+        self._bind_core()
         import wake as WAKE
 
         def emit(m):
@@ -280,6 +304,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(self._probe)
 
     def _probe(self) -> None:
+        self._bind_core()
         import probe as PROBE
 
         def emit(m):
@@ -303,6 +328,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return ok, detail
 
     def _check_session(self) -> tuple[bool, str]:
+        self._bind_core()
         import session as SESSION
         return SESSION.check()
 
@@ -312,6 +338,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return await self.hass.async_add_executor_job(self._request_otp)
 
     def _request_otp(self) -> str:
+        self._bind_core()
         import session as SESSION
         msgs: list[str] = []
         SESSION.request_otp(emit=msgs.append)
@@ -326,5 +353,6 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return ok, detail
 
     def _confirm_otp(self, code: str) -> tuple[bool, str]:
+        self._bind_core()
         import session as SESSION
         return SESSION.confirm_otp(code or "")
