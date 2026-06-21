@@ -6,6 +6,14 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.1 — 2026-06-21
+
+- **Correzione: le nuove informazioni dall'auto ora compaiono davvero.** Per un problema
+  tecnico, i dati che l'auto comunica quando è sveglia — autonomia, chilometri, pressione e
+  temperatura delle gomme, consumi, carburante, tensione della batteria, e perfino **livello
+  batteria e velocità** — non venivano letti e restavano vuoti. Ora vengono letti
+  correttamente: i relativi sensori si popolano non appena l'auto si sveglia.
+
 - **Avviso quando un comando all'auto non riesce (opzionale).** Ora è disponibile un
   "blueprint" pronto all'uso: se lo importi, ricevi un **popup in Home Assistant** (e, se
   vuoi, una notifica sul telefono) ogni volta che un comando all'auto non va a buon fine —
