@@ -95,3 +95,9 @@ DEFAULT_POLL_NORMAL_MIN = 60
 DEFAULT_POLL_CHARGING_MIN = 39
 # attesa tra la sveglia (localizza) e la lettura realtime forzata, perché l'auto torni online
 POLL_WAKE_WAIT = 25
+
+# Anti-doppio-tap: l'auto esegue UN comando alla volta (A00082 = "veicolo occupato").
+# Dopo un comando, per questi secondi un nuovo comando ATTUATIVO viene rifiutato con un
+# messaggio chiaro invece di accodarsi/floodare. Il lock si libera prima se arriva la
+# conferma dall'auto. Cap di sicurezza in caso la conferma non arrivi.
+COMMAND_LOCK_S = 12

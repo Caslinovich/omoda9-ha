@@ -33,7 +33,7 @@ from .const import (
     CONF_VIN, CONF_TUSERID, CONF_PIN, CONF_EMAIL, CONF_CERTS_SRC,
     CONF_BFF, CONF_TSP_HOST, CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, CONF_CHANNEL_ID,
     CONF_POLL_NORMAL, CONF_POLL_CHARGING, DEFAULT_POLL_NORMAL_MIN,
-    DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT,
+    DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT, COMMAND_LOCK_S,
     DEFAULTS,
 )
 
@@ -148,6 +148,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # sveglia l'auto, quindi parte solo se l'utente lo accende esplicitamente. La
         # scelta dell'utente viene poi ricordata tra i riavvii (switch RestoreEntity).
         self.poll_enabled = False
+        self._cmd_busy_until = 0.0     # anti-doppio-tap: monotonic fino a cui un comando è "in volo"
         self._fields: dict[str, str] = {}
         self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
@@ -437,6 +438,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         patch.update({"fields": fields_copy, "awake": True})
         if is_confirmation:
             patch["cmd_status"] = self._format_cmd_result(data)
+            self.clear_command_busy()  # comando risolto → sblocca subito il prossimo (anti-doppio-tap)
         self._update(patch)
 
         # [H3] fronte di risveglio → una sonda realtime (sola lettura). Lo schedule del
@@ -509,12 +511,28 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         A.CHANNEL_ID = self.channel_id
         A.COUNTRY_ID = os.environ.get("OMODA_COUNTRY_ID", A.COUNTRY_ID)
 
+    # ───────────────── anti-doppio-tap (un comando alla volta) ─────────────────
+    @callback
+    def command_busy(self) -> bool:
+        """True se un comando attuativo è ancora "in volo" (inviato da poco, conferma
+        non ancora arrivata). L'auto ne esegue uno alla volta → blocca i doppi-tap."""
+        return time.monotonic() < self._cmd_busy_until
+
+    @callback
+    def mark_command_sent(self) -> None:
+        self._cmd_busy_until = time.monotonic() + COMMAND_LOCK_S
+
+    @callback
+    def clear_command_busy(self) -> None:
+        self._cmd_busy_until = 0.0
+
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
     async def async_send_command(self, key: str, params: dict | None = None) -> str:
         return await self.hass.async_add_executor_job(self._send_command, key, params)
 
     def _send_command(self, key: str, params: dict | None = None) -> str:
         self._bind_core()
+        self.mark_command_sent()  # copre anche poll/wake (localizza) che non passano dal mixin
         import commands as CMD  # core/ è sul path (vedi __init__)
         msgs: list[str] = []
 
