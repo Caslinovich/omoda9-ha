@@ -74,7 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                         (psx_caldo, psx_aria), (pdx_caldo, pdx_aria)):
         caldo._exclusive = aria
         aria._exclusive = caldo
-    # macro clima "tutto" (confermati dal vivo) — raffredda e riscalda si escludono a vicenda
+    # preset clima freddo/caldo (via airControl) — raffredda e riscalda si escludono a vicenda
     raffredda = Omoda9ClimaMacroSwitch(
         coord, "Omoda9 Raffredda tutto", "raffredda_tutto",
         "clima_raffredda_on", "clima_raffredda_off", "mdi:snowflake")
@@ -170,8 +170,9 @@ class Omoda9ChargeSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, Rest
 
 
 class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, RestoreEntity):
-    """Macro clima "tutto" (coolingControl/heatingControl): un preset che accende clima +
-    sedili (+ sbrinatori e volante per il caldo) in un colpo solo.
+    """Preset clima freddo/caldo (via airControl): un tap accende il clima a temperatura
+    estrema (15°C freddo / 31°C caldo + sbrinatori). NB: NON usa la macro one-button
+    coolingControl/heatingControl, che su questa vettura va in timeout (TBOX↔centraline).
 
     L'auto NON pubblica uno stato "preset attivo" dedicato → switch ottimistico (mostra il
     target dopo il comando e ripristina l'ultimo stato al riavvio). Raffredda e Riscalda si

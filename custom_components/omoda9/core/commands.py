@@ -125,28 +125,29 @@ COMMANDS = [
                    "body": {"brSeatAiry": "0"},
                    "name": "Sedile post. DX ventilato OFF", "icon": "mdi:car-seat-cooler", "group": "Clima"}),
 
-    # — Clima: macro comfort "tutto" (confermati DAL VIVO 2026-06-21 → A00079) —
-    # coolingControl/heatingControl = preset unico che accende clima + sedili (+ sbrinatori
-    # e volante per il caldo) in un colpo solo. Body ricostruito 1:1 dagli envelope reali in
-    # 30_capture/omoda9_capture_20260620/command_envelopes.txt. NB: usano `duration` (NON `times`);
-    # valori sedile 3=on/0=off; temperatura 15.0 (max freddo) / 31.0 (max caldo).
-    ("clima_raffredda_on", {"endpoint": "coolingControl",
-                   "body": {"airControlType": "1", "airType": "1", "temperature": "15.0", "duration": "15",
-                            "mSeatAiry": "3", "pSeatAiry": "3", "blSeatAiry": "3", "brSeatAiry": "3"},
+    # — Clima: preset rapidi freddo/caldo —
+    # Usano l'endpoint `airControl` (NON la macro coolingControl/heatingControl). Motivo: la
+    # macro "one-button cooling/heating" su questa vettura FALLISCE — la TBOX risponde con
+    # reason=[{code:95,modelId:0}(clima)+{code:1,...}(4 sedili)] = "timeout TBOX↔centraline
+    # interne" su clima E sedili (verificato dal vivo 2026-06-21, anche ad auto sveglia).
+    # `airControl` invece è confermato funzionante (è ciò che l'app ufficiale lancia subito
+    # dopo la macro). Quindi qui = solo clima a temperatura estrema: 15.0 (max freddo) /
+    # 31.0 (max caldo), `times` (NON `duration`). I sedili NON sono nel preset (restano
+    # comandabili dai rispettivi switch dedicati via seatControl). Per il caldo aggiungiamo
+    # gli sbrinatori parabrezza/lunotto, che airControl supporta (front/backDefrosting).
+    ("clima_raffredda_on", {"endpoint": "airControl",
+                   "body": {"airControlType": "1", "airType": "1", "temperature": "15.0", "times": "15"},
                    "name": "Raffredda tutto", "icon": "mdi:snowflake", "group": "Clima"}),
-    ("clima_raffredda_off", {"endpoint": "coolingControl",
-                   "body": {"airControlType": "0", "airType": "1", "temperature": "15.0", "duration": "15",
-                            "mSeatAiry": "0", "pSeatAiry": "0", "blSeatAiry": "0", "brSeatAiry": "0"},
+    ("clima_raffredda_off", {"endpoint": "airControl",
+                   "body": {"airControlType": "0", "airType": "1", "temperature": "15.0", "times": "15"},
                    "name": "Raffredda tutto OFF", "icon": "mdi:snowflake-off", "group": "Clima"}),
-    ("clima_riscalda_on", {"endpoint": "heatingControl",
-                   "body": {"airControlType": "1", "airType": "1", "temperature": "31.0", "duration": "15",
-                            "frontWindshieldHeat": "1", "backDefrosting": "1", "steerWheelHeatSwitch": "1",
-                            "mSeatHeating": "3", "pSeatHeating": "3", "blSeatHeating": "3", "brSeatHeating": "3"},
+    ("clima_riscalda_on", {"endpoint": "airControl",
+                   "body": {"airControlType": "1", "airType": "1", "temperature": "31.0", "times": "15",
+                            "frontDefrosting": "1", "backDefrosting": "1"},
                    "name": "Riscalda tutto", "icon": "mdi:heat-wave", "group": "Clima"}),
-    ("clima_riscalda_off", {"endpoint": "heatingControl",
-                   "body": {"airControlType": "0", "airType": "1", "temperature": "31.0", "duration": "15",
-                            "frontWindshieldHeat": "0", "backDefrosting": "0", "steerWheelHeatSwitch": "0",
-                            "mSeatHeating": "0", "pSeatHeating": "0", "blSeatHeating": "0", "brSeatHeating": "0"},
+    ("clima_riscalda_off", {"endpoint": "airControl",
+                   "body": {"airControlType": "0", "airType": "1", "temperature": "31.0", "times": "15",
+                            "frontDefrosting": "0", "backDefrosting": "0"},
                    "name": "Riscalda tutto OFF", "icon": "mdi:heat-wave", "group": "Clima"}),
 
     # — Porte / chiusure —
