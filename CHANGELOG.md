@@ -6,6 +6,24 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.6 — 2026-06-21
+
+- **"Raffredda tutto" e "Riscalda tutto" ora sono vere macro su misura per la tua auto.**
+  Abbiamo provato sul campo, uno per uno, tutti i comfort dell'auto per vedere quali
+  rispondono davvero ai comandi a distanza. Su questa vettura risultano installati (e
+  funzionanti) soltanto il **sedile guidatore ventilato** e lo **sbrinatore del lunotto**;
+  riscaldamento dei sedili, volante riscaldato, sbrinatore del parabrezza e ventilazione
+  dei sedili passeggero/posteriori **non sono presenti** e andavano solo in errore. Quindi
+  adesso:
+  - **❄️ Raffredda tutto** = aria condizionata al massimo freddo **+ ventilazione del
+    sedile guidatore**.
+  - **🔥 Riscalda tutto** = aria calda al massimo **+ sbrinatore del lunotto**.
+
+  I comandi vengono inviati **in sequenza, uno alla volta** (l'auto ne esegue uno per
+  volta), quindi la macro impiega qualche secondo in più a completarsi ma non si "accavalla"
+  e non genera più gli errori che vedevi. Niente più tentativi sui comfort che la tua auto
+  non ha.
+
 ## v1.5.5 — 2026-06-21
 
 - **"Raffredda tutto" e "Riscalda tutto" ora funzionano davvero.** Prima questi due
