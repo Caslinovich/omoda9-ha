@@ -18,14 +18,16 @@ import shutil
 import ssl
 import threading
 import time
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    DOMAIN, CAR_SEED, DEFAULT_AWAKE_WINDOW, CERT_FILES,
+    DOMAIN, CAR_SEED, DEFAULT_AWAKE_WINDOW, DEFAULT_SESSION_EVERY, CERT_FILES,
     CONF_VIN, CONF_TUSERID, CONF_PIN, CONF_EMAIL, CONF_CERTS_SRC,
     CONF_BFF, CONF_TSP_HOST, CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, CONF_CHANNEL_ID,
     DEFAULTS,
@@ -106,6 +108,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             os.environ.setdefault("OMODA_EMAIL", cfg[CONF_EMAIL])
 
         self._car = None  # paho mqtt.Client (importato in _connect_car, executor)
+        self._keepalive_unsub = None  # cancella il timer keep-alive sessione
         self._fields: dict[str, str] = {}
         self._last_msg_ts: float = 0.0
         self.position: dict | None = None
@@ -176,6 +179,29 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         """Avvia la connessione MQTT all'auto (paho gira in un thread proprio)."""
         await self.hass.async_add_executor_job(self._connect_car)
 
+    # ───────────────── keep-alive sessione (refresh token periodico) ─────────────────
+    def async_start_keepalive(self) -> None:
+        """Pianifica un refresh sessione periodico per non far scadere il token.
+
+        `_bff_login` rinnova da sé l'access_token col refresh_token quando scade
+        (senza OTP) → ricontrollare la sessione ogni `DEFAULT_SESSION_EVERY` tiene
+        viva la sessione anche da fermi (rotazione del refresh_token prima che la
+        sua finestra si chiuda) ed evita un re-OTP a sorpresa per inattività. Come
+        bonus aggiorna le entità sessione. Non protegge dall'apertura dell'app
+        ufficiale (sessione singola lato cloud → serve comunque OTP)."""
+        if self._keepalive_unsub is not None:
+            return
+        self._keepalive_unsub = async_track_time_interval(
+            self.hass, self._keepalive, timedelta(seconds=DEFAULT_SESSION_EVERY)
+        )
+
+    async def _keepalive(self, _now) -> None:
+        try:
+            ok, detail = await self.async_check_session()
+            _LOGGER.debug("[keepalive] sessione %s — %s", "ok" if ok else "KO", detail)
+        except Exception as err:  # noqa: BLE001 — un errore di rete non deve fermare il timer
+            _LOGGER.debug("[keepalive] errore non bloccante: %s", err)
+
     def _connect_car(self) -> None:
         self._bind_core()
         # import qui (executor): a livello modulo causa un blocking-call warning nel loop.
@@ -216,6 +242,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._car = c
 
     def async_stop(self) -> None:
+        if self._keepalive_unsub is not None:
+            self._keepalive_unsub()
+            self._keepalive_unsub = None
         if self._car is not None:
             self._car.loop_stop()
             self._car.disconnect()

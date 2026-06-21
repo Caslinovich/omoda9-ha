@@ -42,6 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # stato sessione iniziale + avvio connessione MQTT all'auto
     await coordinator.async_check_session()
     await coordinator.async_start()
+    # keep-alive: refresh sessione periodico per non far scadere il token da fermi
+    coordinator.async_start_keepalive()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
