@@ -6,6 +6,18 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.9 — 2026-06-22
+
+- **"Raffredda tutto" e "Riscalda tutto" ora si spengono davvero del tutto (sedili
+  posteriori inclusi).** Per spegnere tutto usa lo stesso pulsante **"Raffredda tutto"**
+  (o "Riscalda tutto") e mettilo su **OFF**: così spegni aria + **tutti** i sedili, anche
+  quelli posteriori. ⚠️ Attenzione: il pulsante **"Clima"** spegne solo l'aria condizionata
+  (e, sull'auto, i sedili anteriori che le sono collegati), ma **non** i sedili posteriori —
+  quelli sono indipendenti. Inoltre l'interruttore ora **resta acceso** mentre il preset è
+  attivo (prima si rispegneva subito e non riuscivi a comandarne lo spegnimento), e **si
+  spegne da solo** dopo circa 15 minuti, quando l'auto chiude il preset. Anche lo spegnimento
+  sveglia l'auto da solo, così arriva fino ai sedili posteriori.
+
 ## v1.5.8 — 2026-06-22
 
 - **"Raffredda tutto" e "Riscalda tutto": basta un tocco, anche con l'auto parcheggiata.**
