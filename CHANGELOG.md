@@ -6,6 +6,28 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.13 — 2026-06-23
+
+- **I chilometri e la batteria ora si aggiornano da soli quando guidi.** Era
+  emerso che l'odometro restava "fermo" all'ultimo valore e la batteria sembrava
+  bloccata. Il motivo: l'auto comunica i dati **veri** (chilometri totali, carica
+  della batteria, tensione) **solo quando l'alta tensione è accesa** — cioè mentre
+  la guidi o la ricarichi. A macchina parcheggiata e spenta non c'è nessun dato
+  nuovo da leggere (vale anche per l'app ufficiale). Ora, **appena l'auto si
+  accende o va in carica, l'integrazione legge i dati freschi più volte di
+  seguito**, così i chilometri salgono e la batteria si aggiorna **automaticamente
+  durante e dopo ogni viaggio**, senza che tu debba fare nulla.
+- **Nuovo pulsante "Aggiorna stato completo".** Se vuoi vedere subito i
+  chilometri e la batteria aggiornati mentre l'auto è parcheggiata, premilo:
+  accende il **clima per circa un minuto** (è l'unico modo per "risvegliare"
+  l'alta tensione), legge i dati reali e poi **rispegne il clima da solo**. Da
+  usare solo quando ti serve il dato fresco al volo: nell'uso normale non serve,
+  perché ora si aggiorna da sé quando guidi.
+- **Niente più "batteria 0%" fuorviante.** Se l'integrazione non ha ancora mai
+  letto una carica reale, mostra **"sconosciuto"** invece di un falso 0% — finché
+  non arriva il primo dato vero (al primo viaggio/ricarica o col pulsante qui
+  sopra).
+
 ## v1.5.12 — 2026-06-22
 
 - **La batteria non va più a 0 quando l'auto è parcheggiata.** Quando l'auto è
