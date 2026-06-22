@@ -82,6 +82,7 @@ class _RtSpec:
     diag: bool = False
     numeric: bool = True
     vmap: dict | None = None  # codice grezzo → testo leggibile (campi enum)
+    invalid: tuple = ()       # valori (float) = segnaposto "nessuna lettura" (HV spenta) → tieni l'ultimo noto
 
 
 # ── Mappe codice→testo per i campi enum di ricarica ──
@@ -132,16 +133,19 @@ _RT_SENSORS: list[_RtSpec] = [
     _RtSpec("consumo_carburante", "Consumo medio carburante", "averageFuel",
             None, "L/100 km", MEAS, "mdi:gas-station"),
     # avgHkPowerKwh50km=20.6 dal vivo → kWh/100km (il nome "50km" è fuorviante).
+    # -100 = segnaposto "nessun dato" ad auto ferma (HV spenta) → tieni l'ultimo noto.
     _RtSpec("consumo_elettrico", "Consumo medio elettrico", "avgHkPowerKwh50km",
-            None, "kWh/100 km", MEAS, "mdi:lightning-bolt"),
+            None, "kWh/100 km", MEAS, "mdi:lightning-bolt", invalid=(-100.0,)),
     # oilSurplus=23 dal vivo → LITRI (confermato dal calcolo autonomia benzina).
     _RtSpec("carburante_residuo", "Carburante residuo", "oilSurplus",
             None, "L", MEAS, "mdi:fuel"),
-    # ── P2 · batteria alta tensione (presenti nel payload live!) ──
+    # ── P2 · batteria alta tensione (valide SOLO ad auto in marcia/ricarica) ──
+    # Da ferma l'auto manda 0 V / -1000 A = segnaposto "HV spenta", non letture reali:
+    # marcati invalidi → il sensore tiene l'ultimo valore noto invece di azzerarsi.
     _RtSpec("tensione_hv", "Tensione batteria HV", "totalVoltage",
-            VOLTAGE, VOLT, MEAS, "mdi:flash", diag=True),
+            VOLTAGE, VOLT, MEAS, "mdi:flash", diag=True, invalid=(0.0,)),
     _RtSpec("corrente_hv", "Corrente batteria HV", "totalCurrent",
-            CURRENT, AMP, MEAS, "mdi:current-dc", diag=True),
+            CURRENT, AMP, MEAS, "mdi:current-dc", diag=True, invalid=(-1000.0,)),
     # ── P2 · ricarica ──
     # remainChargeTime: ASSENTE ad auto non in carica (comparirà sotto carica). Assunto
     # in MINUTI — da riconfermare a vettura in carica. chargeState/appointmentChargeState/
@@ -259,10 +263,17 @@ class Omoda9Battery(_Omoda9RestoreSensor):
 
     def _live_value(self):
         rt = self.coordinator.data.get("realtime") or {}
+        if "dumpEnergy" not in rt:
+            return None
         try:
-            return float(rt["dumpEnergy"]) if "dumpEnergy" in rt else None
+            soc = float(rt["dumpEnergy"])
         except (TypeError, ValueError):
             return None
+        # dumpEnergy=0 = segnaposto "alta tensione spenta" (auto ferma), NON una carica
+        # reale dello 0%: torna None così resta l'ultimo SOC noto (come fa l'app ufficiale).
+        if soc <= 0:
+            return None
+        return soc
 
 
 class Omoda9Speed(_Omoda9RestoreSensor):
@@ -313,9 +324,13 @@ class Omoda9RealtimeSensor(_Omoda9RestoreSensor):
         if not self._spec.numeric:
             return raw
         try:
-            return float(raw)
+            val = float(raw)
         except (TypeError, ValueError):
             return None
+        # segnaposto "nessuna lettura" (es. HV spenta) → None ⇒ resta l'ultimo valore noto
+        if val in self._spec.invalid:
+            return None
+        return val
 
 
 class Omoda9SessionStatus(_Omoda9RestoreSensor):
