@@ -222,8 +222,8 @@ class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, 
 
     def _handle_coordinator_update(self) -> None:
         # macro SENZA stato reale dall'auto → NON azzerare lo stato sui messaggi telemetria
-        # (il mixin lo farebbe): saltiamo il clear del mixin e aggiorniamo solo la UI.
-        super(Omoda9OptimisticMixin, self)._handle_coordinator_update()
+        # (il mixin lo farebbe): manteniamo lo stato impostato, aggiorniamo solo la UI.
+        self.async_write_ha_state()
 
     def _cancel_expire(self) -> None:
         if self._expire_unsub is not None:
