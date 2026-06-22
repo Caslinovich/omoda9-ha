@@ -6,6 +6,20 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.11 — 2026-06-22
+
+- **Login e avvio più robusti.** Migliorata la stabilità in alcune situazioni
+  poco comuni: se il server dell'auto risponde in modo inatteso durante l'invio
+  del codice OTP o la verifica del captcha, ora l'integrazione **riprova invece
+  di bloccarsi**. All'avvio, se qualcosa va storto, **non lascia più processi o
+  controlli automatici "appesi"** in sottofondo, e durante lo spegnimento fa
+  pulizia in modo più ordinato. Il file con le credenziali dell'auto viene salvato
+  in modo **a prova di interruzione** (non può più corrompersi se Home Assistant
+  si chiude proprio in quel momento). Infine, quando spegni l'interruttore
+  **"Aggiornamento automatico"**, l'aggiornamento periodico si ferma **davvero**,
+  senza più riattivarsi da solo. Sono tutti miglioramenti "dietro le quinte": l'uso
+  di tutti i giorni non cambia.
+
 ## v1.5.10 — 2026-06-22
 
 - **Più facile chiedere aiuto se qualcosa non va.** Aggiunto il pulsante **"Scarica
