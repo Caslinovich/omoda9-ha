@@ -164,6 +164,34 @@ Quando esce una nuova release: **HACS → Omoda 9 → Update → riavvia Home As
   valore noto dopo un riavvio di HA (persistenza `RestoreEntity`).
 - Batteria/velocità/odometro arrivano **solo ad auto in marcia**.
 
+## Risoluzione problemi — log e diagnostica
+
+Se qualcosa non funziona, ecco **cosa raccogliere e inviare** per farsi aiutare (o
+aprire una [issue](https://github.com/Caslinovich/omoda9-ha/issues)).
+
+### 1. Diagnostica (consigliata) — un clic, già anonimizzata
+
+**Impostazioni → Dispositivi e servizi → Omoda 9 / Jaecoo →** menù **⋮ → Scarica
+diagnostica**. Scarichi un file con stato sessione, parametri, presenza di
+token/certificati e l'ultima telemetria ricevuta. È **sicuro da condividere**: email,
+PIN, VIN, tUserId e la **posizione GPS** sono oscurati automaticamente, e di token e
+certificati appare solo «presente: sì/no», mai il contenuto.
+
+### 2. Log dettagliati (quando serve vedere l'errore preciso)
+
+Nella stessa pagina dell'integrazione: menù **⋮ → Abilita registrazione di debug** →
+**riproduci il problema** (es. premi il comando che fallisce) → torna e premi
+**Disabilita registrazione di debug**: Home Assistant **scarica da solo** il file di log
+con tutto il dettaglio dell'integrazione.
+
+In alternativa, il log generale di HA è in **Impostazioni → Sistema → Registri →
+Scarica registro completo**.
+
+> I moduli di login girano isolati e con l'output catturato: **PIN, codice OTP e token
+> non vengono mai scritti nei log**. L'unico dato un po' sensibile che può comparire nel
+> log di debug è il **VIN** — se vuoi, oscuralo prima di inviare il file (la
+> *diagnostica* del punto 1 lo nasconde già da sola).
+
 ## Notifiche di errore (blueprint opzionale)
 
 L'integrazione fornisce solo le entità: **non invia notifiche da sola** (per non essere
