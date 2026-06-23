@@ -6,6 +6,16 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.16 — 2026-06-23
+
+- **L'aggiornamento automatico della ricarica ora parte subito anche dopo un riavvio
+  di Home Assistant.** Nella versione precedente, se riavviavi Home Assistant mentre
+  l'auto era già in carica, il monitoraggio in tempo reale poteva non avviarsi da solo
+  finché non scattava il controllo periodico (anche mezz'ora dopo) — perché l'auto, da
+  ferma, non "annuncia" nulla. Ora, **pochi secondi dopo l'avvio**, l'integrazione fa
+  una lettura: se trova l'auto in carica (o in marcia) **fa partire immediatamente**
+  l'aggiornamento ogni paio di minuti. Sempre in sola lettura, nessun comando all'auto.
+
 ## v1.5.15 — 2026-06-23
 
 - **Piccola regolazione del controllo periodico durante la ricarica (ogni 30 minuti
