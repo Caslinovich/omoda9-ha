@@ -6,6 +6,12 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.18 — 2026-06-23
+
+- **Il sensore "Connessa" si chiama ora "Connessione".** È sempre lo stesso sensore (uno
+  solo, con stato **Connesso/Disconnesso**): il nome neutro si legge meglio quando l'auto
+  è offline. Niente di tecnico cambia e i riferimenti esistenti restano validi.
+
 ## v1.5.17 — 2026-06-23
 
 - **"Autonomia totale" corretta + nuovo dato "Autonomia benzina".** Il valore che
