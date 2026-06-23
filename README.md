@@ -1,5 +1,7 @@
 # Omoda 9 / Jaecoo → Home Assistant
 
+🌐 **Italiano** · [English](README.en.md)
+
 Porta la tua auto **Omoda 9 / Jaecoo** dentro **Home Assistant**: stato del
 veicolo, posizione e comandi, come nell'app ufficiale ma integrati in HA.
 
