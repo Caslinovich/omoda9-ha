@@ -6,6 +6,17 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.20 — 2026-06-23
+
+- **Nomi delle entità in italiano o inglese, in automatico secondo la lingua di Home
+  Assistant.** Finora i nomi delle entità (Batteria, Autonomia, Porte…) erano sempre in
+  italiano. Ora ogni entità è **tradotta**: chi usa Home Assistant in inglese vede "Battery",
+  "Total range", "Front left door"…, chi lo usa in italiano vede "Batteria", "Autonomia
+  totale", "Porta anteriore SX". Il nome del veicolo fa da prefisso (es. **"Omoda 9 Battery"**,
+  o **"Jaecoo 7 Battery"** per chi ha un Jaecoo). `entity_id`, storico, automazioni e dashboard
+  **non cambiano**. (Se avevi rinominato a mano qualche entità, il tuo nome personalizzato
+  resta e ha la precedenza.)
+
 ## v1.5.19 — 2026-06-23
 
 - **Il dispositivo prende il nome reale della tua auto (Omoda 9, Jaecoo 7…).** Prima il
