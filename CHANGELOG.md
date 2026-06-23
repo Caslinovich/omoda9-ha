@@ -6,6 +6,13 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.15 — 2026-06-23
+
+- **Piccola regolazione del controllo periodico durante la ricarica (ogni 30 minuti
+  invece di 39).** È solo una rete di sicurezza: a seguire la carica in tempo reale
+  ci pensa già l'aggiornamento automatico ogni paio di minuti introdotto qui sopra.
+  Nessun cambiamento visibile nell'uso di tutti i giorni.
+
 ## v1.5.14 — 2026-06-23
 
 - **La carica si segue da sola: mentre l'auto è attaccata alla colonnina, batteria,
