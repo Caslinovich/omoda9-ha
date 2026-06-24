@@ -35,7 +35,7 @@ from .const import (
     CONF_POLL_NORMAL, CONF_POLL_CHARGING, DEFAULT_POLL_NORMAL_MIN,
     DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT, COMMAND_LOCK_S,
     HV_ON_POLL_EVERY, HV_ON_POLL_MAX,
-    CHARGING_POLL_EVERY, CHARGING_POLL_MAX,
+    CHARGING_POLL_EVERY, CHARGING_POLL_MAX, DRIVE_WATCH_EVERY,
     CONF_VEHICLE_NAME, DATA_VEHICLE_MODEL, DATA_VEHICLE_BRAND,
     DEFAULTS,
 )
@@ -172,6 +172,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._hv_poll_unsub = None    # timer auto-rischedulante del follow-up HV
         self._hv_poll_count = 0       # letture ravvicinate fatte nella finestra HV-on (cap HV_ON_POLL_MAX)
         self._startup_probe_unsub = None  # one-shot: semina il follow-up subito dopo l'avvio
+        # battito di rilevamento marcia (sola lettura): fa partire il refresh automatico durante un
+        # viaggio, dato che l'auto in movimento NON manda push MQTT. Vedi DRIVE_WATCH_EVERY.
+        self._drive_watch_unsub = None
         # interruttore "Aggiornamento automatico" (switch): SPENTO di default — il poll
         # sveglia l'auto, quindi parte solo se l'utente lo accende esplicitamente. La
         # scelta dell'utente viene poi ricordata tra i riavvii (switch RestoreEntity).
@@ -312,9 +315,39 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.poll_enabled = on
         if on:
             self.async_start_telemetry_poll()
-        elif self._poll_unsub is not None:
-            self._poll_unsub()
-            self._poll_unsub = None
+            self.async_start_drive_watch()
+        else:
+            if self._poll_unsub is not None:
+                self._poll_unsub()
+                self._poll_unsub = None
+            if self._drive_watch_unsub is not None:
+                self._drive_watch_unsub()
+                self._drive_watch_unsub = None
+
+    def async_start_drive_watch(self) -> None:
+        """Avvia il battito di rilevamento marcia (sola lettura). È legato a `poll_enabled`
+        (interruttore "Aggiornamento automatico"): ogni `DRIVE_WATCH_EVERY` controlla se l'HV è
+        acceso e, in caso, fa partire il follow-up ravvicinato. Idempotente."""
+        if self._drive_watch_unsub is not None or not self.poll_enabled:
+            return
+        self._drive_watch_unsub = async_track_time_interval(
+            self.hass, self._drive_watch_cb, timedelta(seconds=DRIVE_WATCH_EVERY)
+        )
+
+    async def _drive_watch_cb(self, _now) -> None:
+        """Una lettura realtime di SOLA LETTURA per accorgersi che l'auto è in marcia (l'auto in
+        movimento non manda push MQTT). Se il follow-up ravvicinato è già in corso (marcia/ricarica)
+        o un ciclo di poll è in corso, salta: non si sovrappone. Se trova l'HV acceso, `async_probe`
+        arma da sé il loop a 60s che seguirà tutto il viaggio. NESSUN comando/sveglia all'auto."""
+        if not self.poll_enabled or self._hv_poll_unsub is not None or self._poll_busy:
+            return
+        self._poll_busy = True
+        try:
+            await self.async_probe(force=True)
+        except Exception as err:  # noqa: BLE001 — un errore di rete non deve fermare il timer
+            _LOGGER.debug("[drive-watch] lettura non riuscita: %s", err)
+        finally:
+            self._poll_busy = False
 
     def _is_plugged(self) -> bool:
         """True se la spina di ricarica è collegata (chargeGunState != 0). Legge il
@@ -434,6 +467,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         if self._startup_probe_unsub is not None:
             self._startup_probe_unsub()
             self._startup_probe_unsub = None
+        if self._drive_watch_unsub is not None:
+            self._drive_watch_unsub()
+            self._drive_watch_unsub = None
         if self._car is not None:
             try:
                 self._car.disconnect()

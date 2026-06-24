@@ -51,6 +51,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.async_start_keepalive()
         # poll telemetria periodico (sveglia + lettura); intervalli dalle opzioni
         coordinator.async_start_telemetry_poll()
+        # battito di rilevamento marcia (sola lettura): fa partire il refresh automatico durante un
+        # viaggio. No-op se l'interruttore "Aggiornamento automatico" è spento (lo riavvia lo switch).
+        coordinator.async_start_drive_watch()
         # ricarica l'entry quando l'utente cambia le opzioni (es. intervalli di poll)
         entry.async_on_unload(entry.add_update_listener(_async_options_updated))
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

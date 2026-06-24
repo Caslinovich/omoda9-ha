@@ -123,6 +123,15 @@ HV_ON_POLL_MAX = 90     # cap di sicurezza al numero di letture ravvicinate (~90
 # in ricarica una lettura realtime dà subito stato_ricarica/corrente_hv/tempo_residuo aggiornati.
 CHARGING_POLL_EVERY = 120   # secondi tra due letture realtime mentre la spina è collegata (carica)
 CHARGING_POLL_MAX = 300     # cap di sicurezza (~10h: copre una carica AC completa con margine)
+# MARCIA (battito di rilevamento): l'auto IN MOVIMENTO non manda push MQTT (verificato dal vivo
+# 2026-06-24: a vettura in marcia la sessione MQTT è connessa ma non arriva alcun 5A02 → motore/
+# velocità restavano fermi al giorno prima) e il poll periodico "sveglia+leggi" è ogni ~ora. Senza
+# un battito dedicato il refresh automatico durante un viaggio non partiva MAI. Questo timer fa SOLO
+# una lettura realtime (NESSUN comando, NESSUNA sveglia, zero 12V): appena trova l'HV acceso, la
+# stessa lettura arma il follow-up a HV_ON_POLL_EVERY (60s) che poi segue tutto il viaggio. Se il
+# follow-up è già attivo (marcia/ricarica) il battito non fa nulla. A vettura ferma è una sola GET
+# al cloud ogni intervallo (il realtime torna lo snapshot stantio, scartato): nessun consumo auto.
+DRIVE_WATCH_EVERY = 180     # secondi tra due controlli "sei in marcia?" (sola lettura, no comandi)
 # attesa nelle macro comfort tra la sveglia (localizza) e l'invio di coolingControl/heatingControl:
 # i moduli clima+sedili rispondono solo a vettura DESTA e serve tempo perché la TBOX alimenti il
 # bus comfort. Verificato dal vivo 2026-06-21: con ~35s il comando macro va a buon fine; con
