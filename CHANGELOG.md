@@ -6,6 +6,29 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.22 — 2026-06-24
+
+### 🇮🇹 Italiano
+
+- **Ora i dati dell'auto si aggiornano da soli mentre guidi.** Prima, durante un viaggio, valori
+  come batteria, chilometri percorsi e autonomia restavano fermi finché non premevi a mano il
+  pulsante "Aggiorna stato completo": l'auto in movimento, infatti, non invia aggiornamenti
+  spontanei. Adesso l'integrazione se ne accorge da sola e, mentre sei in marcia, aggiorna i dati
+  da sola circa ogni minuto, senza che tu debba toccare niente. A vettura ferma o in ricarica non
+  cambia nulla rispetto a prima. Tutto questo avviene **solo a lettura**: non viene inviato alcun
+  comando all'auto e non si consuma la batteria. Funziona con l'interruttore "Aggiornamento
+  automatico" acceso (come già era).
+
+### 🇬🇧 English
+
+- **Your car's data now updates by itself while you drive.** Until now, during a trip, values like
+  battery, distance travelled and range stayed frozen until you manually pressed the "Refresh full
+  status" button: a moving car doesn't send updates on its own. Now the integration notices this by
+  itself and, while you're driving, refreshes the data roughly every minute with no action from you.
+  When the car is parked or charging nothing changes compared to before. This is **read-only**: no
+  command is ever sent to the car and it doesn't drain the battery. It works with the "Automatic
+  update" switch turned on (as it already was).
+
 ## v1.5.21 — 2026-06-23
 
 ### 🇮🇹 Italiano
