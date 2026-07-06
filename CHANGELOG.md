@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.24 — 2026-07-06
+
 ### 🇮🇹 Italiano
 
 - **Risolto il problema più insidioso: comandi che sembravano riusciti ma l'auto non faceva
