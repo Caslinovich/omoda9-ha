@@ -21,9 +21,12 @@ import os
 import sys
 import json
 import time
+import logging
 import hashlib
 import urllib.request
 import urllib.error
+
+_LOGGER = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -336,16 +339,27 @@ def _mint_taskid(tuid):
         return tid
     # nessun taskId: distinguo la CAUSA per instradare il rimedio giusto.
     code = j.get("code")
+    # DIAGNOSTICA (2026-07-06): il codice/messaggio GREZZO di checkPassword è l'UNICO modo per
+    # sapere se è davvero un PIN errato o un'altra causa (permessi veicolo, parametri scene/
+    # channelId, backend). Finora NON veniva loggato → dal log l'anti-lockout diceva solo "PIN
+    # errati", che è la nostra INFERENZA. Ora logghiamo code + message reali (campi non sensibili).
+    cp_msg = str(j.get("message") or j.get("msg") or "").strip()
+    detail = f"code={code}" + (f" '{cp_msg[:100]}'" if cp_msg else "")
+    _LOGGER.warning("[taskId] checkPassword NON ha restituito un taskId → %s "
+                    "(risposta backend grezza; se non è un PIN errato la causa è qui)", detail)
     if str(code) in _NON_PIN_CODES:
         # sessione/token (A00000): NON è colpa del PIN → non contare l'anti-lockout, chiedi reauth.
         raise CommandError(
-            "Sessione scaduta — riautentica dall'avviso di Home Assistant (nuovo codice OTP)",
+            f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
+            "Home Assistant (nuovo codice OTP)",
             code=str(code), reason="reauth")
-    # ogni altro esito senza taskId = PIN comandi rifiutato → conta e chiedi la riconfig-PIN.
+    # ogni altro esito senza taskId = molto probabilmente PIN comandi errato → conta e chiedi
+    # la riconfig-PIN. Il `detail` (code reale) è ora nel messaggio e nel log per confermarlo.
     _PIN_FAIL["n"] += 1
     _PIN_FAIL["ts"] = now
     raise CommandError(
-        "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
+        f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo nelle "
+        "impostazioni dell'integrazione",
         reason="pin")
 
 

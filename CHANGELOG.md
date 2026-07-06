@@ -11,12 +11,21 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 - **Tolto un doppione tra gli indicatori del motore.** C'erano due voci per lo stato del motore
   ("Motore" e "Motore acceso") che mostravano la stessa identica informazione: ne resta una sola
   ("Motore"), quella storica. Nessuna funzione persa, solo un po' di ordine in più.
+- **Diagnosi più precisa quando un comando viene rifiutato per il PIN.** Quando l'auto non accetta
+  il codice di sicurezza dei comandi, ora l'integrazione **mostra e registra il codice esatto**
+  restituito dal server. Serve a distinguere con certezza un vero "PIN sbagliato" da altre cause
+  (permessi del veicolo, problema temporaneo del server): utile se, dopo aver corretto il PIN, i
+  comandi continuassero a non partire.
 
 ### 🇬🇧 English
 
 - **Removed a duplicate engine indicator.** There were two entries for the engine state ("Engine"
   and "Engine running") showing the exact same information: only one remains ("Engine"), the
   original. No functionality lost, just a bit tidier.
+- **More precise diagnosis when a command is rejected because of the PIN.** When the car doesn't
+  accept the command security code, the integration now **shows and logs the exact code** returned
+  by the server. This tells a genuine "wrong PIN" apart from other causes (vehicle permissions, a
+  temporary server issue): useful if commands still won't go through after you've corrected the PIN.
 
 ## v1.5.24 — 2026-07-06
 
