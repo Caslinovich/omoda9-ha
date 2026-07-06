@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.23 — 2026-07-06
+
 ### 🇮🇹 Italiano
 
 - **Batteria e chilometri restano aggiornati anche ad auto ferma, e la macchina viene "svegliata"
