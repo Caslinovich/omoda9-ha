@@ -246,11 +246,20 @@ class CommandError(Exception):
     """Comando rifiutato dal backend/auto (NON eseguito). `code` = codice tspconsole,
     `retryable` = True se ritentare ha senso (es. auto occupata). Il coordinator lo
     lascia propagare; l'entità ottimistica lo cattura per annullare lo stato ottimistico
-    e mostrare l'errore reale all'utente, invece di restare bloccata su un finto successo."""
+    e mostrare l'errore reale all'utente, invece di restare bloccata su un finto successo.
 
-    def __init__(self, message: str, code: str | None = None) -> None:
+    `reason` instrada il RIMEDIO nel coordinator (routing per causa, non solo per codice):
+      - "pin"    = PIN comandi errato / anti-lockout / PIN mancante → riconfigurare il PIN
+                   (Repair issue fixabile / Configura → Riconfigura). NON è un problema di
+                   sessione: il token è valido, i sensori funzionano.
+      - "reauth" = sessione/token scaduti (login fallito, code A00000) → riautenticazione
+                   nativa HA (nuovo OTP). L'OTP NON cambia il PIN: i due canali sono distinti.
+      - None     = altro rifiuto dell'auto (occupata, non consentito, a riposo): solo avviso."""
+
+    def __init__(self, message: str, code: str | None = None, reason: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.reason = reason
         self.retryable = code in RETRYABLE_CODES
 
 # H6 anti-lockout: stop dopo N checkPassword falliti consecutivi entro una finestra,
@@ -264,20 +273,38 @@ _PIN_FAIL_WINDOW = int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600"))
 _NON_PIN_CODES = {"A00000"}
 
 
+def reset_pin_lockout() -> None:
+    """Azzera il contatore anti-lockout dei PIN errati.
+
+    `_PIN_FAIL` è module-level: un semplice reload dell'entry (es. dopo aver corretto
+    il PIN) NON ricarica il modulo, quindi senza questo reset i comandi resterebbero
+    bloccati fino allo scadere della finestra (600s) o a un riavvio di HA. Va chiamato
+    quando il PIN viene riconfigurato (config flow / Repair) e dal `_bind_core` del
+    coordinator quando rileva che il PIN è cambiato."""
+    _PIN_FAIL["n"] = 0
+    _PIN_FAIL["ts"] = 0.0
+
+
 def _mint_taskid(tuid):
     """Conia un taskId con la catena BFF dell'app (queryList→setVecDefault→checkPassword).
        FIX S26 (2026-06-20): scene=0 (NON 2) → il taskId coniato è benedetto da tspconsole
        (airControl A00079). scene=2 dava A00089; scene=1 A00089; scene>=3 A00546. Obiettivo #1 RISOLTO.
 
        H6: rifiuta il conio se il PIN è vuoto (NON chiama checkPassword a vuoto) e si
-       auto-blocca dopo troppi PIN errati consecutivi per evitare il lockout account."""
+       auto-blocca dopo troppi PIN errati consecutivi per evitare il lockout account.
+
+       Su fallimento solleva SEMPRE CommandError con `reason` ("pin" o "reauth") così il
+       coordinator può instradare il rimedio giusto (riconfig PIN vs riautenticazione)."""
     if not (PIN or "").strip():
-        raise ValueError("PIN non configurato (OMODA_PIN vuoto): impossibile coniare il taskId")
+        raise CommandError(
+            "PIN comandi non configurato — impostalo nelle impostazioni dell'integrazione",
+            reason="pin")
     now = time.time()
     if _PIN_FAIL["n"] >= _PIN_FAIL_MAX and (now - _PIN_FAIL["ts"]) < _PIN_FAIL_WINDOW:
-        raise RuntimeError(
-            f"conio bloccato: {_PIN_FAIL['n']} PIN errati consecutivi — verifica OMODA_PIN "
-            "prima di riprovare (anti-lockout account)")
+        raise CommandError(
+            f"PIN comandi bloccato temporaneamente ({_PIN_FAIL['n']} tentativi errati) — "
+            "riconfigura il PIN nelle impostazioni dell'integrazione, poi riprova",
+            reason="pin")
 
     import requests
     access = wake._access_token()
@@ -307,12 +334,19 @@ def _mint_taskid(tuid):
     if tid:
         _PIN_FAIL["n"] = 0          # successo → azzera il contatore anti-lockout
         return tid
-    # nessun taskId: se NON è un errore di sessione/token, conta come possibile PIN errato
+    # nessun taskId: distinguo la CAUSA per instradare il rimedio giusto.
     code = j.get("code")
-    if str(code) not in _NON_PIN_CODES:
-        _PIN_FAIL["n"] += 1
-        _PIN_FAIL["ts"] = now
-    return None
+    if str(code) in _NON_PIN_CODES:
+        # sessione/token (A00000): NON è colpa del PIN → non contare l'anti-lockout, chiedi reauth.
+        raise CommandError(
+            "Sessione scaduta — riautentica dall'avviso di Home Assistant (nuovo codice OTP)",
+            code=str(code), reason="reauth")
+    # ogni altro esito senza taskId = PIN comandi rifiutato → conta e chiedi la riconfig-PIN.
+    _PIN_FAIL["n"] += 1
+    _PIN_FAIL["ts"] = now
+    raise CommandError(
+        "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
+        reason="pin")
 
 
 def get_taskid(tuid, emit=lambda m: None):
@@ -332,10 +366,18 @@ def get_taskid(tuid, emit=lambda m: None):
         emit("conio taskId (checkPassword)…")
         try:
             tid = _mint_taskid(tuid)
-            if tid:
-                return tid, "checkPassword"
-        except Exception as e:
+        except CommandError as e:
+            # PIN errato / anti-lockout / sessione: pubblica il dettaglio e PROPAGA (non più
+            # inghiottito) → send() lo lascia salire col suo `reason` per il routing del rimedio.
+            emit(str(e))
+            raise
+        except Exception as e:  # noqa: BLE001 — errore imprevisto del conio → PIN generico
             emit(f"checkPassword fallito: {e}")
+            raise CommandError(
+                "PIN comandi non verificabile — riconfiguralo nelle impostazioni "
+                f"dell'integrazione ({e})", reason="pin") from e
+        if tid:
+            return tid, "checkPassword"
     return None, "none"
 
 
@@ -349,17 +391,23 @@ def send(cmd_key, emit=lambda m: None, params=None):
     c = CMD_MAP.get(cmd_key)
     if not c:
         emit(f"comando sconosciuto: {cmd_key}")
-        return f"sconosciuto: {cmd_key}"
+        raise CommandError(f"Comando sconosciuto: {cmd_key}")
 
     token, tuid = wake._bff_login()
     if not token:
         emit("login fallito (token scaduto? rifare OTP ad app chiusa)")
-        return "login_failed"
+        raise CommandError(
+            "Sessione scaduta — riautentica dall'avviso di Home Assistant (nuovo codice OTP)",
+            reason="reauth")
 
+    # get_taskid propaga CommandError (PIN/anti-lockout/sessione) col suo `reason`.
     taskid, src = get_taskid(tuid, emit)
     if not taskid:
+        # nessun taskId ma nessuna eccezione = conio disattivato e nessun taskId env/file.
         emit("nessun taskId disponibile")
-        return "no_taskid"
+        raise CommandError(
+            "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
+            reason="pin")
 
     ts = int(time.time() * 1000)
     body = dict(c["body"])
@@ -384,7 +432,7 @@ def send(cmd_key, emit=lambda m: None, params=None):
         status = e.code
     except Exception as e:
         emit(f"errore rete: {e}")
-        return f"net_error: {e}"
+        raise CommandError(f"Errore di rete durante l'invio del comando: {e}")
 
     code = None
     try:
@@ -398,7 +446,10 @@ def send(cmd_key, emit=lambda m: None, params=None):
     # CommandError (l'emit ha già pubblicato il dettaglio su «Esito comando»). I codici
     # sconosciuti restano "non bloccanti" (return) per prudenza: non inventiamo un fallimento.
     if str(code) in FAILURE_CODES:
-        raise CommandError(out, code=str(code))
+        # A00000 = token scaduto → reauth (nuovo OTP); gli altri rifiuti non hanno rimedio
+        # automatico (auto occupata/non consentita/a riposo) → solo avviso.
+        reason = "reauth" if str(code) == "A00000" else None
+        raise CommandError(out, code=str(code), reason=reason)
     return out
 
 

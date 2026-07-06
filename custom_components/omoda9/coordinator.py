@@ -627,6 +627,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         wake.TSP_HOST = self.tsp_host
         wake.TOKEN_PATH = self.token_path
         commands.VIN = self.vin
+        # PIN cambiato (es. dopo una riconfig)? Azzera l'anti-lockout PRIMA di riassegnare:
+        # `_PIN_FAIL` è module-level e un reload dell'entry NON lo ricarica → senza questo i
+        # comandi resterebbero bloccati col vecchio conteggio anche col PIN ora corretto.
+        if getattr(commands, "PIN", None) != self.pin and hasattr(commands, "reset_pin_lockout"):
+            commands.reset_pin_lockout()
         commands.PIN = self.pin
         commands.TSP_HOST = self.tsp_host
         # MINT_TASKID dal valore d'ambiente (default 1 = i pulsanti coniano il proprio
@@ -657,7 +662,23 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
     async def async_send_command(self, key: str, params: dict | None = None) -> str:
-        return await self.hass.async_add_executor_job(self._send_command, key, params)
+        try:
+            res = await self.hass.async_add_executor_job(self._send_command, key, params)
+        except Exception as err:  # noqa: BLE001 — instrada il rimedio, poi RILANCIA
+            # Routing per CAUSA (CommandError.reason), non solo per codice:
+            #   reason="reauth" → riautenticazione nativa HA (nuovo OTP: sessione/token morti)
+            #   reason="pin"    → Repair issue fixabile che apre la riconfig del PIN comandi
+            # NB: il PIN errato NON tocca `session_ok` (la sessione è valida, i sensori vanno):
+            # sarebbe il rimedio sbagliato (l'OTP non cambia il PIN). Vedi audit [CRITICO].
+            reason = getattr(err, "reason", None)
+            if reason == "reauth":
+                self.entry.async_start_reauth(self.hass)
+            elif reason == "pin":
+                self._raise_pin_issue(str(err))
+            raise
+        # comando riuscito → un eventuale avviso "PIN errato" non ha più ragione d'essere
+        self._clear_pin_issue()
+        return res
 
     def _send_command(self, key: str, params: dict | None = None) -> str:
         self._bind_core()
@@ -672,6 +693,32 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
         CMD.send(key, emit=emit, params=params)
         return msgs[-1] if msgs else "inviato"
+
+    # ───────────────── Repair "PIN comandi errato" (riconfig senza smontare) ─────────────────
+    @property
+    def _pin_issue_id(self) -> str:
+        return f"pin_wrong_{self.entry.entry_id}"
+
+    @callback
+    def _raise_pin_issue(self, detail: str) -> None:
+        """Crea un avviso di riparazione HA (fixabile) per il PIN comandi errato.
+
+        NON tocca `session_ok`: la sessione è valida (i sensori funzionano), il problema è
+        solo il PIN a 4 cifre dei comandi remoti. L'avviso apre la riconfig del PIN."""
+        from homeassistant.helpers import issue_registry as ir
+        ir.async_create_issue(
+            self.hass, DOMAIN, self._pin_issue_id,
+            is_fixable=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="pin_wrong",
+            data={"entry_id": self.entry.entry_id},
+        )
+
+    @callback
+    def _clear_pin_issue(self) -> None:
+        """Chiude l'avviso "PIN errato" (un comando è andato a buon fine → PIN ora corretto)."""
+        from homeassistant.helpers import issue_registry as ir
+        ir.async_delete_issue(self.hass, DOMAIN, self._pin_issue_id)
 
     async def async_query_theft(self) -> int | None:
         """Stato antifurto via REST (read-only); None se non disponibile."""
@@ -927,6 +974,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
     async def async_check_session(self) -> tuple[bool, str]:
         ok, detail = await self.hass.async_add_executor_job(self._check_session)
         self._update({"session_ok": ok, "session_detail": detail})
+        # Sessione/token scaduti (NON un errore di rete transitorio) → riautenticazione nativa
+        # HA: mostra la card "Riautentica". session.check() ritorna "Sessione scaduta …" solo
+        # quando il login BFF col token attuale fallisce per token morto. HA deduplica: se una
+        # reauth è già in corso non ne apre un'altra. Le entità OTP diagnostiche restano fallback.
+        if not ok and detail.startswith("Sessione scaduta"):
+            self.entry.async_start_reauth(self.hass)
         return ok, detail
 
     def _check_session(self) -> tuple[bool, str]:

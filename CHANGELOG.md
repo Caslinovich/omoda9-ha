@@ -6,6 +6,42 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **Risolto il problema più insidioso: comandi che sembravano riusciti ma l'auto non faceva
+  nulla.** Se il **PIN a 4 cifre dei comandi remoti** è sbagliato, l'auto rifiuta ogni comando:
+  finora però l'interruttore in Home Assistant restava sul "fatto" e sembrava tutto a posto
+  (mentre finestrini, clima, serratura ecc. non si muovevano). Ora, in questo caso, **l'interruttore
+  torna subito allo stato reale** e compare un chiaro messaggio: **«PIN comandi errato»**.
+- **Puoi correggere il PIN senza dover eliminare e riaggiungere l'integrazione.** Compare un avviso
+  di **riparazione** di Home Assistant (Impostazioni → il classico avviso in alto) che, con un clic,
+  ti fa **inserire il PIN corretto** e sistema tutto da solo. In alternativa trovi la stessa cosa in
+  **Impostazioni → Dispositivi e servizi → Omoda 9 → Riconfigura**. Non serve alcun codice via email:
+  il PIN dei comandi non c'entra con l'accesso. (Consiglio: non insistere con un PIN errato, per non
+  rischiare il blocco dell'account.)
+- **Se l'accesso scade (capita se apri l'app ufficiale sul telefono) ora te lo dice chiaramente.**
+  Prima l'unico modo per rimettere a posto la sessione era cercare dei pulsanti "nascosti"; ora
+  Home Assistant mostra l'avviso standard **«Ri-autenticazione necessaria»**: premi, ricevi un
+  **codice via email** e lo inserisci — e i dati tornano. I vecchi pulsanti OTP restano comunque
+  disponibili come riserva.
+
+### 🇬🇧 English
+
+- **Fixed the nastiest problem: commands that looked successful while the car did nothing.** If the
+  **4-digit remote-command PIN** is wrong, the car rejects every command — but until now the switch
+  in Home Assistant stayed on "done" and everything looked fine (while windows, climate, lock, etc.
+  didn't move). Now, in this case, **the switch snaps back to its real state** and a clear message
+  appears: **"Wrong command PIN"**.
+- **You can fix the PIN without deleting and re-adding the integration.** A Home Assistant **repair**
+  notice appears (Settings → the usual banner at the top) that, with one click, lets you **enter the
+  correct PIN** and sorts everything out. Alternatively you'll find the same under **Settings →
+  Devices & services → Omoda 9 → Reconfigure**. No email code is needed: the command PIN has nothing
+  to do with logging in. (Tip: don't keep retrying with a wrong PIN, to avoid locking the account.)
+- **If your session expires (which happens if you open the official phone app) it now tells you
+  clearly.** Previously the only way to restore the session was to hunt for "hidden" buttons; now
+  Home Assistant shows the standard **"Re-authentication required"** notice: click it, get a **code
+  by email**, enter it — and the data comes back. The old OTP buttons remain available as a fallback.
+
 ## v1.5.23 — 2026-07-06
 
 ### 🇮🇹 Italiano

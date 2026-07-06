@@ -28,16 +28,57 @@
         "data": {
           "vin": "Vehicle (VIN)"
         }
+      },
+      "reconfigure": {
+        "title": "Change the vehicle control PIN",
+        "description": "Enter the 4-digit PIN used for remote commands. The PIN is not used to log in, so no email code is needed. Fix this if commands report success but the car does nothing (wrong PIN).",
+        "data": {
+          "pin": "Vehicle control PIN"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Omoda 9 / Jaecoo",
+        "description": "The session expired (for example because the official app was opened). A new verification code was sent to {email}. Enter it below to restore access. Leave the field empty and submit to resend the code.",
+        "data": {
+          "code": "OTP code"
+        }
       }
     },
     "error": {
       "otp_send_failed": "Could not send the OTP code. Check the email/PIN and try again.",
       "otp_invalid": "Invalid or expired OTP code.",
-      "no_vehicle": "Login succeeded but no vehicle was found on this account."
+      "no_vehicle": "Login succeeded but no vehicle was found on this account.",
+      "pin_required": "Enter the vehicle control PIN."
     },
     "abort": {
       "already_configured": "This vehicle (VIN) is already configured.",
-      "token_move_failed": "Could not store the authentication token. Check Home Assistant's config folder permissions and try again."
+      "token_move_failed": "Could not store the authentication token. Check Home Assistant's config folder permissions and try again.",
+      "reconfigure_no_entry": "Integration not found — reload Home Assistant and try again.",
+      "reconfigure_successful": "PIN updated. The integration was reloaded.",
+      "reauth_no_entry": "Integration not found — reload Home Assistant and try again.",
+      "reauth_successful": "Re-authentication successful. The integration was reloaded."
+    }
+  },
+  "issues": {
+    "pin_wrong": {
+      "title": "Omoda 9: wrong command PIN",
+      "fix_flow": {
+        "step": {
+          "pin": {
+            "title": "Fix the vehicle control PIN",
+            "description": "Remote commands are being rejected because the 4-digit control PIN is wrong (the sensors keep working — this is not a login problem). Enter the correct PIN. Do not keep retrying with a wrong PIN, to avoid locking the Chery account.",
+            "data": {
+              "pin": "Vehicle control PIN"
+            }
+          }
+        },
+        "error": {
+          "pin_required": "Enter the vehicle control PIN."
+        },
+        "abort": {
+          "entry_not_found": "Integration not found — reload Home Assistant and try again."
+        }
+      }
     }
   },
   "options": {

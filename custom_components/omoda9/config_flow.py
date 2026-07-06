@@ -142,6 +142,7 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._data: dict[str, Any] = {}
         self._tuserid: str = ""
         self._vins: list[str] = []
+        self._otp_requested: bool = False   # reauth: OTP già inviato in questa sessione di flow
 
     @staticmethod
     @callback
@@ -227,6 +228,70 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
             return self.async_abort(reason="token_move_failed")
         return self.async_create_entry(title=f"Omoda 9 ({vin})", data=self._data)
+
+    # ───────────────── Riconfigurazione PIN (senza smontare l'integrazione) ─────────────────
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
+        """Cambia SOLO il PIN a 4 cifre dei comandi remoti, senza OTP.
+
+        Il PIN non serve al login (l'OTP conia il token, il PIN firma solo i comandi) →
+        correggerlo è pura scrittura in entry.data + reload. È il rimedio al «PIN comandi
+        errato»: prima si doveva eliminare e riaggiungere l'integrazione."""
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        errors: dict[str, str] = {}
+        if entry is None:
+            return self.async_abort(reason="reconfigure_no_entry")
+        if user_input is not None:
+            new_pin = (user_input.get(CONF_PIN) or "").strip()
+            if not new_pin:
+                errors["base"] = "pin_required"
+            else:
+                # chiudi un eventuale avviso "PIN errato": il reload azzera l'anti-lockout
+                # (commands.reset_pin_lockout in _bind_core quando rileva il PIN cambiato).
+                from homeassistant.helpers import issue_registry as ir
+                ir.async_delete_issue(self.hass, DOMAIN, f"pin_wrong_{entry.entry_id}")
+                return self.async_update_reload_and_abort(
+                    entry, data={**entry.data, CONF_PIN: new_pin})
+        schema = vol.Schema({
+            vol.Required(CONF_PIN, default=entry.data.get(CONF_PIN, "")): str,
+        })
+        return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
+
+    # ───────────────── Riautenticazione nativa (sessione morta / app ufficiale aperta) ─────────────────
+    async def async_step_reauth(self, entry_data: dict[str, Any] | None = None):
+        """Punto d'ingresso della reauth (HA mostra la card "Riautentica")."""
+        self._otp_requested = False
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
+        """Invia un nuovo OTP e conia il token, riusando la logica del coordinator
+        (`_request_otp`/`_confirm_otp`, che fanno `_bind_core` sulla token-path per-VIN).
+        Campo vuoto = reinvia il codice."""
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        coordinator = self.hass.data.get(DOMAIN, {}).get(self.context["entry_id"])
+        errors: dict[str, str] = {}
+        if entry is None or coordinator is None:
+            return self.async_abort(reason="reauth_no_entry")
+        if user_input is not None:
+            code = (user_input.get("code") or "").strip()
+            if code:
+                ok, _detail = await self.hass.async_add_executor_job(
+                    coordinator._confirm_otp, code)
+                if ok:
+                    return self.async_update_reload_and_abort(entry, data=entry.data)
+                errors["base"] = "otp_invalid"
+            else:
+                self._otp_requested = False   # nessun codice = richiesta di reinvio
+        # (ri)invia il codice OTP la prima volta che si mostra la form (o su richiesta di reinvio)
+        if not self._otp_requested:
+            self._otp_requested = True
+            try:
+                await self.hass.async_add_executor_job(coordinator._request_otp)
+            except Exception:  # noqa: BLE001
+                errors["base"] = "otp_send_failed"
+        schema = vol.Schema({vol.Required("code"): str})
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=schema, errors=errors,
+            description_placeholders={"email": entry.data.get(CONF_EMAIL, "")})
 
 
 class Omoda9OptionsFlow(config_entries.OptionsFlow):

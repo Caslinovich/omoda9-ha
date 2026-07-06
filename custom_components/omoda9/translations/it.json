@@ -28,16 +28,57 @@
         "data": {
           "vin": "Veicolo (VIN)"
         }
+      },
+      "reconfigure": {
+        "title": "Cambia il PIN dei comandi",
+        "description": "Inserisci il PIN a 4 cifre usato per i comandi remoti. Il PIN non serve per l'accesso, quindi non è richiesto alcun codice via email. Correggilo se i comandi risultano \"riusciti\" ma l'auto non fa nulla (PIN errato).",
+        "data": {
+          "pin": "PIN di controllo veicolo"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ri-autentica Omoda 9 / Jaecoo",
+        "description": "La sessione è scaduta (ad esempio perché è stata aperta l'app ufficiale). Un nuovo codice di verifica è stato inviato a {email}. Inseriscilo qui sotto per ripristinare l'accesso. Lascia il campo vuoto e conferma per rinviare il codice.",
+        "data": {
+          "code": "Codice OTP"
+        }
       }
     },
     "error": {
       "otp_send_failed": "Impossibile inviare il codice OTP. Controlla email/PIN e riprova.",
       "otp_invalid": "Codice OTP non valido o scaduto.",
-      "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account."
+      "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account.",
+      "pin_required": "Inserisci il PIN di controllo veicolo."
     },
     "abort": {
       "already_configured": "Questo veicolo (VIN) è già configurato.",
-      "token_move_failed": "Impossibile salvare il token di autenticazione. Controlla i permessi della cartella di configurazione di Home Assistant e riprova."
+      "token_move_failed": "Impossibile salvare il token di autenticazione. Controlla i permessi della cartella di configurazione di Home Assistant e riprova.",
+      "reconfigure_no_entry": "Integrazione non trovata — ricarica Home Assistant e riprova.",
+      "reconfigure_successful": "PIN aggiornato. L'integrazione è stata ricaricata.",
+      "reauth_no_entry": "Integrazione non trovata — ricarica Home Assistant e riprova.",
+      "reauth_successful": "Ri-autenticazione riuscita. L'integrazione è stata ricaricata."
+    }
+  },
+  "issues": {
+    "pin_wrong": {
+      "title": "Omoda 9: PIN dei comandi errato",
+      "fix_flow": {
+        "step": {
+          "pin": {
+            "title": "Correggi il PIN dei comandi",
+            "description": "I comandi remoti vengono rifiutati perché il PIN a 4 cifre è errato (i sensori continuano a funzionare: non è un problema di accesso). Inserisci il PIN corretto. Non insistere con un PIN errato, per evitare il blocco dell'account Chery.",
+            "data": {
+              "pin": "PIN di controllo veicolo"
+            }
+          }
+        },
+        "error": {
+          "pin_required": "Inserisci il PIN di controllo veicolo."
+        },
+        "abort": {
+          "entry_not_found": "Integrazione non trovata — ricarica Home Assistant e riprova."
+        }
+      }
     }
   },
   "options": {
