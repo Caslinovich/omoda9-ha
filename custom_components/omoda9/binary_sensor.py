@@ -50,6 +50,17 @@ _RT_BINARIES = [
     ("avviso_gomma_post_sx", "Avviso gomma post. SX", "lRearTyreCall", BinarySensorDeviceClass.PROBLEM),
     ("avviso_gomma_post_dx", "Avviso gomma post. DX", "rRearTyreCall", BinarySensorDeviceClass.PROBLEM),
     ("batteria_scarica", "Batteria scarica", "socLowCall", BinarySensorDeviceClass.BATTERY),
+    # — 4 campi VERIFICATI dalla cattura live del payload realtime (2026-06-25, 91 campi:
+    #   tutti presenti, ="0" a riposo). Sostituiscono i campi del bean SDK che la cattura ha
+    #   dimostrato NON inviati da questa vettura (rimossi). —
+    # oilCall = avviso carburante basso; electricityCall = avviso ricarica necessaria:
+    # device_class PROBLEM (on = avviso). Polarità 1=avviso da confermare quando scatteranno.
+    ("avviso_carburante_basso", "Avviso carburante basso", "oilCall", BinarySensorDeviceClass.PROBLEM),
+    ("avviso_ricarica", "Avviso ricarica necessaria", "electricityCall", BinarySensorDeviceClass.PROBLEM),
+    # engineState = motore termico in moto; hVoltageState = sistema alta tensione attivo.
+    # device_class RUNNING (on = in funzione). A riposo entrambi 0 (verificato dal vivo).
+    ("motore", "Motore acceso", "engineState", BinarySensorDeviceClass.RUNNING),
+    ("alta_tensione", "Alta tensione attiva", "hVoltageState", BinarySensorDeviceClass.RUNNING),
 ]
 
 

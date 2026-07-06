@@ -17,6 +17,9 @@ qui è quello più ricorrente/utile; ogni chiamante può aggiungere contesto.
 CODE_MEANING = {
     "000000": "ok ✅",
     "A00079": "comando accettato ✅",
+    # A00082: l'auto è OCCUPATA (processa un comando alla volta) → il comando NON è stato
+    # eseguito. Transitorio: riprovare tra qualche secondo (verificato live 2026-06-21).
+    "A00082": "auto occupata ⏳ (un altro comando è in corso) — riprova tra qualche secondo",
     # A00084 (i18n: "No vehicle control command permission"): l'account/veicolo non ha il
     # permesso PER QUEL comando. Visto dal vivo su remoteStart (2026-06-21): la nostra Omoda 9
     # non consente l'avvio remoto del motore, mentre clima/serratura/GPS funzionano.

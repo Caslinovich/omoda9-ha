@@ -6,6 +6,62 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **Batteria e chilometri restano aggiornati anche ad auto ferma, e la macchina viene "svegliata"
+  molto meno di prima.** Abbiamo scoperto che l'auto resta raggiungibile dal cloud per ore dopo
+  averla usata: in questa finestra l'integrazione legge batteria, chilometri, autonomia e gomme
+  **in sola lettura, senza svegliarla**. Quindi ora la sveglia (che consuma un pochino la batteria
+  da 12V e può dare fastidio all'app ufficiale sul telefono) parte **solo quando serve davvero**,
+  cioè quando l'auto è effettivamente "addormentata"; se è già raggiungibile, i dati si aggiornano
+  da soli senza alcun risveglio. È stato aggiunto anche un nuovo indicatore **"Dati auto
+  aggiornati"** che mostra a che ora risale l'ultimo dato ricevuto dall'auto, così sai quanto è
+  fresco quello che vedi. Migliorato infine il riconoscimento della marcia (in certi casi l'auto
+  risultava ferma pur essendo in movimento). Tutto rigorosamente **a sola lettura**.
+- **Gli interruttori non mostrano più un finto "fatto" quando l'auto rifiuta il comando.** Se
+  invii un comando (chiudi, clima, serratura…) mentre l'auto sta già eseguendo qualcos'altro, è
+  occupata e non lo esegue: prima l'interruttore restava acceso come se fosse andato a buon fine
+  e bisognava aspettare diversi secondi per riprovare. Ora l'interruttore **torna subito allo
+  stato reale**, compare un avviso chiaro («auto occupata, riprova tra qualche secondo») e puoi
+  **ritentare immediatamente**. Lo stesso vale per gli altri rifiuti dell'auto (funzione non
+  consentita su questa vettura, sessione da rifare): niente più falsi "eseguito".
+- **Nuovi indicatori e autonomia totale più realistica.** Aggiunti quattro nuovi indicatori
+  verificati dal vivo: **Motore acceso**, **Alta tensione attiva**, **Avviso carburante basso**
+  e **Avviso ricarica necessaria**. In cambio abbiamo tolto alcuni indicatori che questa vettura
+  non trasmette proprio (restavano per sempre "sconosciuto" e non facevano che confondere:
+  temperatura abitacolo, alcuni contachilometri parziali, potenza di ricarica, velocità media,
+  consumo istantaneo, tempi di ricarica rapida). Infine l'**Autonomia totale** ora è calcolata
+  come **elettrica + benzina** (prima usava un valore del cruscotto che, verificato sul campo,
+  restava fisso e non seguiva la carica) → il numero mostrato è finalmente coerente con lo stato
+  reale di batteria e serbatoio.
+
+### 🇬🇧 English
+
+- **Battery and mileage stay fresh even while the car is parked, and the car is "woken up" far less
+  than before.** We found that the car stays reachable from the cloud for hours after you use it:
+  during that window the integration reads battery, mileage, range and tyres **read-only, without
+  waking it**. So the wake-up (which slightly uses the 12V battery and can interfere with the
+  official phone app) now happens **only when actually needed** — i.e. when the car is genuinely
+  asleep; if it's already reachable, the data refreshes on its own with no wake-up at all. We also
+  added a new **"Car data updated"** indicator showing the time of the last data received from the
+  car, so you know how fresh what you see is. Driving detection was also improved (in some cases the
+  car looked stationary while actually moving). Everything strictly **read-only**.
+- **Switches no longer show a fake "done" when the car rejects the command.** If you send a
+  command (close, climate, lock…) while the car is already doing something else, it's busy and
+  won't run it: previously the switch stayed on as if it had succeeded, and you had to wait
+  several seconds before retrying. Now the switch **snaps back to its real state**, a clear notice
+  appears ("car busy, try again in a few seconds") and you can **retry right away**. The same
+  applies to the car's other rejections (feature not allowed on this vehicle, session needs
+  re-login): no more false "executed".
+- **New indicators and a more realistic total range.** Added four new live-verified indicators:
+  **Engine running**, **High voltage active**, **Low fuel warning** and **Charge needed warning**.
+  In exchange we removed a few indicators this vehicle simply doesn't transmit (they stayed
+  "unknown" forever and only caused confusion: cabin temperature, some trip odometers, charging
+  power, average speed, instant consumption, fast-charge times). Finally, **Total range** is now
+  computed as **electric + petrol** (it previously used a dashboard value that, verified in the
+  field, stayed fixed and didn't follow the charge) → the number shown is finally consistent with
+  the real battery and tank state.
+
 ## v1.5.22 — 2026-06-24
 
 ### 🇮🇹 Italiano

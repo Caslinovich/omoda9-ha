@@ -38,7 +38,7 @@ import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
 PROBE_LOG  = os.environ.get("OMODA_PROBE_LOG", os.path.join(HERE, "data", "probe.jsonl"))
-COOLDOWN_S = int(os.environ.get("PROBE_COOLDOWN", "1800"))   # 30 min: 1 sonda per risveglio
+COOLDOWN_S = int(os.environ.get("PROBE_COOLDOWN", "120"))   # [2.0] 2 min: il realtime è read-only e l'auto resta online a lungo → letture opportunistiche frequenti (era 1800=30min, troppo restrittivo). I poll usano force=True e lo bypassano comunque.
 
 _BUSY = threading.Lock()
 _last_run = {"ts": 0.0}

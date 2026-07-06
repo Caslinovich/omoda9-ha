@@ -103,7 +103,13 @@ FAST_GUN_MAP = {"0": "Scollegata", "1": "Collegata", "2": "Collegata (ricarica r
 
 def _range_totale(rt: dict):
     """Autonomia totale REALE = elettrica (`pureElectricRange`) + benzina (`mileageSurplus`).
-    None se manca un pezzo → resta l'ultimo valore noto (RestoreSensor)."""
+    None se manca un pezzo → resta l'ultimo valore noto (RestoreSensor).
+
+    ⚠️ NON usare `cruiseRange` come totale: il dump head unit lo dava per il combinato
+    del cruscotto (ID_DISPLAY_MILEAGE), ma la cattura live SMENTISCE: `cruiseRange`=134
+    è rimasto INVARIATO tra 2026-06-21 (elettrica=60) e 2026-06-25 (elettrica=116) mentre
+    l'autonomia elettrica cambiava → è un valore statico/nominale, non il totale live.
+    La somma elettrica+benzina segue lo stato batteria → è la scelta corretta."""
     try:
         return float(rt["pureElectricRange"]) + float(rt["mileageSurplus"])
     except (TypeError, ValueError, KeyError):
@@ -119,12 +125,13 @@ _RT_SENSORS: list[_RtSpec] = [
     # carburante è invariato (oilSurplus 23 L) → segue il serbatoio, non la batteria.
     _RtSpec("range_benzina", "Autonomia benzina", "mileageSurplus",
             DIST, KM, MEAS, "mdi:gas-station"),
-    # Autonomia TOTALE reale = elettrica + benzina (campo CALCOLATO, non un field grezzo).
-    # Riusa la suffix storica "range_totale" → l'entità sensor.omoda9_autonomia_totale resta,
-    # ma ora mostra la somma corretta invece del solo mileageSurplus.
+    # Autonomia TOTALE = elettrica + benzina (campo CALCOLATO). Vedi _range_totale.
+    # (cruiseRange NON usato come totale: smentito dalla cattura live, è statico — vedi sotto.)
     _RtSpec("range_totale", "Autonomia totale", "",
             DIST, KM, MEAS, "mdi:map-marker-distance", compute=_range_totale),
-    # cruiseRange = stima combinata alternativa (134 km dal vivo) → diagnostico.
+    # cruiseRange = valore "combinato" grezzo del cloud → diagnostico. ⚠️ Osservato STATICO
+    # (134 km sia il 21/06 sia il 25/06 con elettrica 60→116) → semantica incerta, tenuto
+    # solo come diagnostico, NON usato per l'autonomia totale.
     _RtSpec("range_combinato", "Autonomia combinata (stima)", "cruiseRange",
             DIST, KM, MEAS, "mdi:map-marker-distance", diag=True),
     _RtSpec("odometro", "Odometro", "odometer",
@@ -186,6 +193,11 @@ _RT_SENSORS: list[_RtSpec] = [
             TEMP, C, MEAS, "mdi:thermometer", diag=True),
     _RtSpec("temp_imp_dx", "Temperatura impostata DX", "frontSetTempRight",
             TEMP, C, MEAS, "mdi:thermometer", diag=True),
+    # NB (2026-06-25): la cattura live del payload realtime (91 campi) ha SMENTITO i campi
+    # del bean SDK che NON sono inviati da questa vettura (inCarTemperature, a/bOdoMeter,
+    # chargingPower, averageSpeed, insFuelConsum, fastRemainChargeTime, tmpParkCountdown):
+    # rimossi perché restavano `unknown` per sempre. Le novità verificate (oilCall/
+    # electricityCall/engineState/hVoltageState) sono binary_sensor → vedi binary_sensor.py.
 ]
 
 
@@ -218,6 +230,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     ents.append(Omoda9TimestampSensor(coord, "Omoda9 Ultimo contatto", "lastseen", "last_seen", "mdi:car-clock"))
     ents.append(Omoda9TimestampSensor(coord, "Omoda9 Ultima sveglia", "wake_ts", "last_wake", "mdi:car-clock"))
     ents.append(Omoda9TimestampSensor(coord, "Omoda9 Ultima posizione", "pos_fix", "last_pos_fix", "mdi:map-marker-clock"))
+    # [2.0] freschezza del frame auto (resultTime del realtime): quanto è vecchio il dato
+    #       batteria/odometro mostrato — utile ad auto ferma per sapere se è recente o stantio.
+    ents.append(Omoda9TimestampSensor(coord, "Omoda9 Dati auto aggiornati", "car_data_ts", "car_data_ts", "mdi:database-clock"))
     add(ents)
 
 

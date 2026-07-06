@@ -224,6 +224,35 @@ CMD_MAP = {k: v for k, v in COMMANDS}
 # Codici risposta tspconsole → testo leggibile: ora dalla mappa UNICA core/codes.py.
 CODE_MEANING = codes.CODE_MEANING
 
+# Esito comando: il backend risponde SEMPRE HTTP 200, l'esito vero è nel `code` del body.
+# `SUCCESS_CODES` = comando accettato dal backend (poi l'auto conferma via MQTT 110x);
+# `FAILURE_CODES` = comando NON eseguito (auto occupata/a riposo, permesso negato, taskId
+# o token non validi). Distinguere i due è ciò che permette alle entità ottimistiche di
+# NON mostrare un finto "successo" quando l'auto ha rifiutato (vedi Omoda9OptimisticMixin).
+SUCCESS_CODES = frozenset({"000000", "A00079"})
+FAILURE_CODES = frozenset({
+    "A00082",  # auto occupata (transitorio, riprovabile)
+    "A00084",  # comando non consentito su questa auto
+    "A00089", "A00546", "A00567",  # taskId/checkPassword non validi
+    "A00000",  # token scaduto/non valido
+    "A07312",  # rate-limit sveglia
+    "A07900",  # auto a riposo / firma o car_token non validi
+})
+# Codici transitori: il comando può andare a buon fine se ritentato (auto solo occupata).
+RETRYABLE_CODES = frozenset({"A00082"})
+
+
+class CommandError(Exception):
+    """Comando rifiutato dal backend/auto (NON eseguito). `code` = codice tspconsole,
+    `retryable` = True se ritentare ha senso (es. auto occupata). Il coordinator lo
+    lascia propagare; l'entità ottimistica lo cattura per annullare lo stato ottimistico
+    e mostrare l'errore reale all'utente, invece di restare bloccata su un finto successo."""
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = code in RETRYABLE_CODES
+
 # H6 anti-lockout: stop dopo N checkPassword falliti consecutivi entro una finestra,
 # per non far scattare il blocco PIN dell'account (un PIN sbagliato incrementa gli
 # errori lato Chery). Un successo (taskId ottenuto) azzera il contatore.
@@ -365,6 +394,11 @@ def send(cmd_key, emit=lambda m: None, params=None):
     meaning = CODE_MEANING.get(code, raw[:120])
     out = f"{c['name']}: HTTP {status} {code or ''} — {meaning}"
     emit(out)
+    # esito reale dal `code`: un codice di fallimento noto = comando NON eseguito → solleva
+    # CommandError (l'emit ha già pubblicato il dettaglio su «Esito comando»). I codici
+    # sconosciuti restano "non bloccanti" (return) per prudenza: non inventiamo un fallimento.
+    if str(code) in FAILURE_CODES:
+        raise CommandError(out, code=str(code))
     return out
 
 

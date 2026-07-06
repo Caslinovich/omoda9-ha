@@ -55,8 +55,14 @@
   },
   "entity": {
     "binary_sensor": {
+      "alta_tensione_attiva": {
+        "name": "Alta tensione attiva"
+      },
       "auto_sveglia": {
         "name": "Auto sveglia"
+      },
+      "avviso_carburante_basso": {
+        "name": "Avviso carburante basso"
       },
       "avviso_gomma_ant_dx": {
         "name": "Avviso gomma ant. DX"
@@ -69,6 +75,9 @@
       },
       "avviso_gomma_post_sx": {
         "name": "Avviso gomma post. SX"
+      },
+      "avviso_ricarica_necessaria": {
+        "name": "Avviso ricarica necessaria"
       },
       "batteria_scarica": {
         "name": "Batteria scarica"
@@ -93,6 +102,9 @@
       },
       "motore": {
         "name": "Motore"
+      },
+      "motore_acceso": {
+        "name": "Motore acceso"
       },
       "porta_anteriore_dx": {
         "name": "Porta anteriore DX"

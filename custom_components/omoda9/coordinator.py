@@ -175,6 +175,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # battito di rilevamento marcia (sola lettura): fa partire il refresh automatico durante un
         # viaggio, dato che l'auto in movimento NON manda push MQTT. Vedi DRIVE_WATCH_EVERY.
         self._drive_watch_unsub = None
+        # [2.0] esito dell'ULTIMA sonda realtime: True = auto raggiungibile dal cloud
+        # (000000, c'è un frame), False = offline (A07900), None = sconosciuto. Usato dal
+        # ciclo di poll per svegliare SOLO quando serve (auto che dorme davvero).
+        self._online: bool | None = None
         # interruttore "Aggiornamento automatico" (switch): SPENTO di default — il poll
         # sveglia l'auto, quindi parte solo se l'utente lo accende esplicitamente. La
         # scelta dell'utente viene poi ricordata tra i riavvii (switch RestoreEntity).
@@ -191,6 +195,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                      # — sensori diagnostici (parità col bridge) —
                      "cmd_status": None, "wake_status": None, "probe_status": None,
                      "last_seen": None, "last_wake": None, "last_pos_fix": None,
+                     # [2.0] istante del frame realtime dell'auto (campo resultTime): dice
+                     # QUANTO è fresco il dato batteria/odometro mostrato (utile ad auto ferma).
+                     "car_data_ts": None,
                      "realtime": None}
 
     # ───────────────── provisioning certificati mutual-TLS (FASE 3c) ─────────────────
@@ -390,8 +397,23 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 self._schedule_next_poll()
 
     async def _do_poll_cycle(self) -> None:
-        """Un ciclo: sveglia (posizione via vehicleLocation/1301) + lettura realtime."""
-        _LOGGER.debug("[poll] ciclo: sveglia + lettura realtime (plugged=%s)", self._is_plugged())
+        """Un ciclo di poll. [2.0] SVEGLIA CONDIZIONALE: prima una lettura realtime di SOLA
+        LETTURA; se l'auto risulta ONLINE (il cloud ha un frame, A07900 assente) i sensori sono
+        già aggiornati e NON si sveglia — l'auto resta raggiungibile per ore, e a riposo la
+        sveglia aggiornerebbe solo il GPS, non batteria/odometro (servirebbe l'alta tensione).
+        Si sveglia (vehicleLocation/1301) SOLO se la sonda la trova offline, per ri-portarla
+        online. Risparmia 12V e riduce la contesa con l'app ufficiale."""
+        plugged = self._is_plugged()
+        _LOGGER.debug("[poll] ciclo: prima lettura realtime read-only (plugged=%s)", plugged)
+        try:
+            await self.async_probe(force=True)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("[poll] lettura realtime fallita: %s", err)
+        if self._online:
+            _LOGGER.debug("[poll] auto online: dati già freschi, niente sveglia")
+            return
+        # auto offline (A07900) → una sveglia + rilettura per riportarla online
+        _LOGGER.debug("[poll] auto offline: sveglio (localizza) e rileggo")
         try:
             await self.async_send_command("localizza")
         except Exception as err:  # noqa: BLE001
@@ -704,6 +726,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                     return True
             except (TypeError, ValueError):
                 pass
+        # [2.0] rete di sicurezza: in marcia capita engineState=0 ma velocità>0 (verificato
+        # dal vivo 2026-06-25: 38 km/h con engineState=0, hVoltageState=1) → l'auto è "sveglia"
+        # sulla rete HV, quindi il realtime è reale e va seguito.
+        sp = rt.get("vehicleSpeed")
+        if sp is None:
+            sp = fields.get("vehicleSpeed")
+        try:
+            if sp is not None and float(sp) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
         return False
 
     @callback
@@ -751,8 +784,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             _LOGGER.info("[probe] %s", m)
             self._update({"probe_status": str(m)[:255]})
 
-        # force=True (poll periodico): ignora il cooldown di 30 min della sonda.
-        PROBE.probe_once(emit, force=force, on_data=self._on_probe_data)
+        # force=True (poll periodico): ignora il cooldown della sonda.
+        res = PROBE.probe_once(emit, force=force, on_data=self._on_probe_data)
+        # [2.0] memorizza se l'auto è raggiungibile dal cloud (per la sveglia condizionale del
+        # ciclo di poll). Solo se la sonda è andata a buon fine: su busy/eccezione tieni l'ultimo.
+        if isinstance(res, dict) and res.get("ok") and "online" in res:
+            self._online = bool(res.get("online"))
 
     def _on_probe_data(self, data: dict) -> None:
         """Dati realtime (GPS/batteria/velocità/online) dalla sonda → stato posizione.
@@ -760,6 +797,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         Gira nel thread executor: gli accessi a self.position sono serializzati col
         lock e si emette sempre una COPIA (no condivisione per riferimento)."""
         patch: dict = {"realtime": dict(data) if isinstance(data, dict) else data}
+        # [2.0] freschezza del frame auto: resultTime (epoch ms) → datetime tz-aware. Dice
+        # quanto è vecchio il dato batteria/odometro (ad auto ferma il frame resta lo stesso).
+        if isinstance(data, dict):
+            for tk in ("resultTime", "collectTime", "time", "updateTime"):
+                raw = data.get(tk)
+                try:
+                    if raw not in (None, "", 0, "0"):
+                        patch["car_data_ts"] = dt_util.utc_from_timestamp(int(float(raw)) / 1000)
+                        break
+                except (TypeError, ValueError):
+                    continue
         if isinstance(data, dict) and "lat" in data and "lon" in data:
             geo = {k: data[k] for k in GEO_KEYS if k in data}
             with self._state_lock:

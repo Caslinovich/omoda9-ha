@@ -55,8 +55,14 @@
   },
   "entity": {
     "binary_sensor": {
+      "alta_tensione_attiva": {
+        "name": "High voltage active"
+      },
       "auto_sveglia": {
         "name": "Car awake"
+      },
+      "avviso_carburante_basso": {
+        "name": "Low fuel warning"
       },
       "avviso_gomma_ant_dx": {
         "name": "Tire warning front right"
@@ -69,6 +75,9 @@
       },
       "avviso_gomma_post_sx": {
         "name": "Tire warning rear left"
+      },
+      "avviso_ricarica_necessaria": {
+        "name": "Charge needed warning"
       },
       "batteria_scarica": {
         "name": "Low battery"
@@ -93,6 +102,9 @@
       },
       "motore": {
         "name": "Engine"
+      },
+      "motore_acceso": {
+        "name": "Engine running"
       },
       "porta_anteriore_dx": {
         "name": "Front right door"
