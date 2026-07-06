@@ -57,9 +57,10 @@ _RT_BINARIES = [
     # device_class PROBLEM (on = avviso). Polarità 1=avviso da confermare quando scatteranno.
     ("avviso_carburante_basso", "Avviso carburante basso", "oilCall", BinarySensorDeviceClass.PROBLEM),
     ("avviso_ricarica", "Avviso ricarica necessaria", "electricityCall", BinarySensorDeviceClass.PROBLEM),
-    # engineState = motore termico in moto; hVoltageState = sistema alta tensione attivo.
-    # device_class RUNNING (on = in funzione). A riposo entrambi 0 (verificato dal vivo).
-    ("motore", "Motore acceso", "engineState", BinarySensorDeviceClass.RUNNING),
+    # hVoltageState = sistema alta tensione attivo. device_class RUNNING (on = in funzione).
+    # A riposo 0 (verificato dal vivo). NB: engineState NON è qui — esiste già il binary_sensor
+    # "Motore" (da SENSORS/5A02, con storico recorder); il doppione realtime "Motore acceso"
+    # è stato rimosso nella v1.5.25 (leggeva lo stesso campo engineState).
     ("alta_tensione", "Alta tensione attiva", "hVoltageState", BinarySensorDeviceClass.RUNNING),
 ]
 

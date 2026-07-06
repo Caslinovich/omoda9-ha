@@ -6,6 +6,18 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **Tolto un doppione tra gli indicatori del motore.** C'erano due voci per lo stato del motore
+  ("Motore" e "Motore acceso") che mostravano la stessa identica informazione: ne resta una sola
+  ("Motore"), quella storica. Nessuna funzione persa, solo un po' di ordine in più.
+
+### 🇬🇧 English
+
+- **Removed a duplicate engine indicator.** There were two entries for the engine state ("Engine"
+  and "Engine running") showing the exact same information: only one remains ("Engine"), the
+  original. No functionality lost, just a bit tidier.
+
 ## v1.5.24 — 2026-07-06
 
 ### 🇮🇹 Italiano

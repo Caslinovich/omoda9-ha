@@ -144,9 +144,6 @@
       "motore": {
         "name": "Motore"
       },
-      "motore_acceso": {
-        "name": "Motore acceso"
-      },
       "porta_anteriore_dx": {
         "name": "Porta anteriore DX"
       },

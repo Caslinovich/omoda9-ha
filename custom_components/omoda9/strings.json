@@ -144,9 +144,6 @@
       "motore": {
         "name": "Engine"
       },
-      "motore_acceso": {
-        "name": "Engine running"
-      },
       "porta_anteriore_dx": {
         "name": "Front right door"
       },
