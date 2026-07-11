@@ -2,5 +2,7 @@
   "name": "Omoda 9 / Jaecoo",
   "render_readme": true,
   "homeassistant": "2024.1.0",
-  "content_in_root": false
+  "content_in_root": false,
+  "zip_release": true,
+  "filename": "omoda9.zip"
 }
