@@ -106,20 +106,14 @@ class Omoda9OptimisticMixin:
         l'ottimismo — così la card torna allo stato reale invece di restare bloccata
         su un target mai attuato — e propaga un errore leggibile (toast in UI).
 
-        [anti-doppio-tap] L'auto esegue UN comando alla volta: se uno è ancora in volo
-        (conferma non arrivata) si rifiuta il nuovo invio con un messaggio chiaro invece
-        di floodare l'auto (che risponderebbe "occupato")."""
-        if self.coordinator.command_busy():
-            raise HomeAssistantError(
-                "Un altro comando è ancora in corso — l'auto ne esegue uno alla volta. "
-                "Attendi qualche secondo (guarda «Esito comando») e riprova.")
-        self.coordinator.mark_command_sent()  # sincrono: chiude la finestra di doppio-tap
+        [coda] L'auto esegue UN comando alla volta: un secondo comando (o un doppio-tap) non
+        viene rifiutato ma ASPETTA il suo turno nella coda del coordinator, che lo invia appena
+        l'auto ha confermato il precedente."""
         self._set_optimistic(target)
         try:
             await self.coordinator.async_send_command(key, params)
         except Exception as err:  # noqa: BLE001 — qualunque fallimento del comando
             self._clear_optimistic()
-            self.coordinator.clear_command_busy()  # invio fallito → sblocca subito il retry
             self.async_write_ha_state()
             raise HomeAssistantError(f"Comando «{key}» non riuscito: {err}") from err
 

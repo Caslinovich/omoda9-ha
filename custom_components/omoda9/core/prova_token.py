@@ -84,6 +84,7 @@ if __name__ == "__main__":
         tmp = _TOKEN_OUT + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(j, fh, indent=2, ensure_ascii=False)
+        os.chmod(tmp, 0o600)   # il token è una credenziale: leggibile solo dal proprietario
         os.replace(tmp, _TOKEN_OUT)
         print(f"\n✅ LOGIN OK — token salvato in {_TOKEN_OUT}")
         print("RESULT: OK")          # H7: sentinella stabile per session.confirm_otp

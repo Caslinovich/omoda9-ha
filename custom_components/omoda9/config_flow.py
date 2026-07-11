@@ -45,6 +45,14 @@ def _pending_token_path(hass: HomeAssistant) -> str:
     return hass.config.path(f"{DOMAIN}_pending_token.json")
 
 
+def _reason_line(detail: str | None) -> str:
+    """Riga col motivo del fallimento, mostrata sotto il form (vuota se non c'è). Il dettaglio è
+    la coda dell'output del sottoprocesso di login (stato HTTP / chiave del server tipo
+    `email.not.exists` / messaggio captcha): NON contiene PIN, OTP né token."""
+    detail = (detail or "").strip()
+    return f"\n\n⚠️ Motivo: {detail}" if detail else ""
+
+
 def _prepare_env(hass: HomeAssistant, data: dict, token_path: str | None = None) -> None:
     """Imposta l'ambiente per i moduli core/ (letti a import-time) dai dati del flow."""
     os.environ["OMODA_EMAIL"] = data.get(CONF_EMAIL, "")
@@ -151,14 +159,17 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
+        reason = ""
         if user_input is not None:
             self._data.update(user_input)
-            ok, _msg = await self.hass.async_add_executor_job(
+            ok, msg = await self.hass.async_add_executor_job(
                 _send_otp, self.hass, self._data
             )
             if ok:
                 return await self.async_step_otp()
             errors["base"] = "otp_send_failed"
+            reason = _reason_line(msg)
+            _LOGGER.warning("Omoda9: invio OTP fallito: %s", msg)
 
         schema = vol.Schema({
             vol.Required(CONF_EMAIL): str,
@@ -173,22 +184,26 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_CHANNEL_ID, default=DEFAULTS[CONF_CHANNEL_ID]): str,
             vol.Optional(CONF_CERTS_SRC, default=""): str,
         })
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors,
+                                    description_placeholders={"reason": reason})
 
     async def async_step_otp(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
+        reason = ""
         if user_input is not None:
-            ok, _msg = await self.hass.async_add_executor_job(
+            ok, msg = await self.hass.async_add_executor_job(
                 _mint_token, self.hass, self._data, user_input["code"].strip()
             )
             if ok:
-                d_ok, tu, vins, _detail = await self.hass.async_add_executor_job(
+                d_ok, tu, vins, detail = await self.hass.async_add_executor_job(
                     _discover, self.hass, self._data
                 )
                 if not d_ok or not vins:
                     # Token coniato ma nessun veicolo: il pending è inutilizzabile.
                     await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
                     errors["base"] = "no_vehicle"
+                    reason = _reason_line(detail)
+                    _LOGGER.warning("Omoda9: scoperta veicolo fallita: %s", detail)
                 else:
                     self._tuserid = tu
                     self._vins = vins
@@ -199,9 +214,12 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # OTP errato/scaduto: butta il pending eventualmente già scritto.
                 await self.hass.async_add_executor_job(_cleanup_pending, self.hass)
                 errors["base"] = "otp_invalid"
+                reason = _reason_line(msg)
+                _LOGGER.warning("Omoda9: conferma OTP fallita: %s", msg)
 
         schema = vol.Schema({vol.Required("code"): str})
-        return self.async_show_form(step_id="otp", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="otp", data_schema=schema, errors=errors,
+                                    description_placeholders={"reason": reason})
 
     async def async_step_select_vehicle(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -271,14 +289,17 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if entry is None or coordinator is None:
             return self.async_abort(reason="reauth_no_entry")
+        reason = ""
         if user_input is not None:
             code = (user_input.get("code") or "").strip()
             if code:
-                ok, _detail = await self.hass.async_add_executor_job(
+                ok, detail = await self.hass.async_add_executor_job(
                     coordinator._confirm_otp, code)
                 if ok:
                     return self.async_update_reload_and_abort(entry, data=entry.data)
                 errors["base"] = "otp_invalid"
+                reason = _reason_line(detail)
+                _LOGGER.warning("Omoda9: reauth, conferma OTP fallita: %s", detail)
             else:
                 self._otp_requested = False   # nessun codice = richiesta di reinvio
         # (ri)invia il codice OTP la prima volta che si mostra la form (o su richiesta di reinvio)
@@ -286,12 +307,15 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._otp_requested = True
             try:
                 await self.hass.async_add_executor_job(coordinator._request_otp)
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 errors["base"] = "otp_send_failed"
+                reason = _reason_line(f"{type(e).__name__}: {e}")
+                _LOGGER.warning("Omoda9: reauth, invio OTP fallito: %s", e)
         schema = vol.Schema({vol.Required("code"): str})
         return self.async_show_form(
             step_id="reauth_confirm", data_schema=schema, errors=errors,
-            description_placeholders={"email": entry.data.get(CONF_EMAIL, "")})
+            description_placeholders={"email": entry.data.get(CONF_EMAIL, ""),
+                                      "reason": reason})
 
 
 class Omoda9OptionsFlow(config_entries.OptionsFlow):

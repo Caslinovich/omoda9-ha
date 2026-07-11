@@ -23,7 +23,7 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -33,7 +33,7 @@ from .const import (
     CONF_VIN, CONF_TUSERID, CONF_PIN, CONF_EMAIL, CONF_CERTS_SRC,
     CONF_BFF, CONF_TSP_HOST, CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, CONF_CHANNEL_ID,
     CONF_POLL_NORMAL, CONF_POLL_CHARGING, DEFAULT_POLL_NORMAL_MIN,
-    DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT, COMMAND_LOCK_S,
+    DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT, COMMAND_SETTLE_S, COMMAND_QUEUE_WAIT,
     HV_ON_POLL_EVERY, HV_ON_POLL_MAX,
     CHARGING_POLL_EVERY, CHARGING_POLL_MAX, DRIVE_WATCH_EVERY,
     CONF_VEHICLE_NAME, DATA_VEHICLE_MODEL, DATA_VEHICLE_BRAND,
@@ -183,7 +183,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # sveglia l'auto, quindi parte solo se l'utente lo accende esplicitamente. La
         # scelta dell'utente viene poi ricordata tra i riavvii (switch RestoreEntity).
         self.poll_enabled = False
-        self._cmd_busy_until = 0.0     # anti-doppio-tap: monotonic fino a cui un comando è "in volo"
+        self._cmd_gate = asyncio.Lock()  # serializza i comandi: l'auto ne esegue uno alla volta (coda, non rifiuto)
         self._fields: dict[str, str] = {}
         self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
@@ -548,7 +548,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         patch.update({"fields": fields_copy, "awake": True})
         if is_confirmation:
             patch["cmd_status"] = self._format_cmd_result(data)
-            self.clear_command_busy()  # comando risolto → sblocca subito il prossimo (anti-doppio-tap)
+            # la conferma fa avanzare last_seen (sopra) → _settle_after_command esce subito,
+            # così il prossimo comando in coda parte appena l'auto ha confermato questo.
         self._update(patch)
 
         # [H3] fronte di risveglio → una sonda realtime (sola lettura). Lo schedule del
@@ -632,6 +633,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # comandi resterebbero bloccati col vecchio conteggio anche col PIN ora corretto.
         if getattr(commands, "PIN", None) != self.pin and hasattr(commands, "reset_pin_lockout"):
             commands.reset_pin_lockout()
+            # il taskId in cache è stato coniato col PIN precedente → non riusarlo
+            if hasattr(commands, "invalidate_taskid"):
+                commands.invalidate_taskid()
         commands.PIN = self.pin
         commands.TSP_HOST = self.tsp_host
         # MINT_TASKID dal valore d'ambiente (default 1 = i pulsanti coniano il proprio
@@ -645,26 +649,36 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         A.CHANNEL_ID = self.channel_id
         A.COUNTRY_ID = os.environ.get("OMODA_COUNTRY_ID", A.COUNTRY_ID)
 
-    # ───────────────── anti-doppio-tap (un comando alla volta) ─────────────────
-    @callback
-    def command_busy(self) -> bool:
-        """True se un comando attuativo è ancora "in volo" (inviato da poco, conferma
-        non ancora arrivata). L'auto ne esegue uno alla volta → blocca i doppi-tap."""
-        return time.monotonic() < self._cmd_busy_until
-
-    @callback
-    def mark_command_sent(self) -> None:
-        self._cmd_busy_until = time.monotonic() + COMMAND_LOCK_S
-
-    @callback
-    def clear_command_busy(self) -> None:
-        self._cmd_busy_until = 0.0
+    # ───────────────── coda comandi (l'auto ne esegue uno alla volta) ─────────────────
+    async def _settle_after_command(self) -> None:
+        """Pausa dopo un comando, prima che parta il prossimo in coda: aspetta la conferma
+        dell'auto (l'arrivo del push MQTT fa avanzare `last_seen`) oppure COMMAND_SETTLE_S,
+        quale che arrivi prima. Serve a non ricolpire l'auto mentre è ancora occupata (A00082)."""
+        anchor = self.data.get("last_seen")
+        deadline = time.monotonic() + COMMAND_SETTLE_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            if self.data.get("last_seen") != anchor:
+                return   # l'auto ha confermato → si può passare al comando successivo
 
     # ───────────────── azioni (delega a core/, in executor) ─────────────────
     async def async_send_command(self, key: str, params: dict | None = None) -> str:
+        """Invia un comando serializzato dietro una coda: l'auto ne esegue uno alla volta, quindi
+        un secondo comando ASPETTA il suo turno invece di fallire. Limite d'attesa COMMAND_QUEUE_WAIT.
+
+        Il chiamante torna appena il comando è stato inviato (la UI resta reattiva); lo slot della
+        coda resta occupato ancora un po' in background — fino alla conferma dell'auto o a
+        COMMAND_SETTLE_S — così il PROSSIMO della coda non parte mentre l'auto è ancora occupata."""
+        try:
+            await asyncio.wait_for(self._cmd_gate.acquire(), timeout=COMMAND_QUEUE_WAIT)
+        except asyncio.TimeoutError as err:
+            raise HomeAssistantError(
+                "L'auto è ancora impegnata coi comandi precedenti — riprova tra qualche istante."
+            ) from err
         try:
             res = await self.hass.async_add_executor_job(self._send_command, key, params)
         except Exception as err:  # noqa: BLE001 — instrada il rimedio, poi RILANCIA
+            self._cmd_gate.release()   # invio fallito → libera subito lo slot
             # Routing per CAUSA (CommandError.reason), non solo per codice:
             #   reason="reauth" → riautenticazione nativa HA (nuovo OTP: sessione/token morti)
             #   reason="pin"    → Repair issue fixabile che apre la riconfig del PIN comandi
@@ -678,11 +692,18 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             raise
         # comando riuscito → un eventuale avviso "PIN errato" non ha più ragione d'essere
         self._clear_pin_issue()
+
+        async def _hold_then_release() -> None:
+            try:
+                await self._settle_after_command()
+            finally:
+                self._cmd_gate.release()
+
+        self.hass.async_create_background_task(_hold_then_release(), f"{DOMAIN}_cmd_settle")
         return res
 
     def _send_command(self, key: str, params: dict | None = None) -> str:
         self._bind_core()
-        self.mark_command_sent()  # copre anche poll/wake (localizza) che non passano dal mixin
         import commands as CMD  # core/ è sul path (vedi __init__)
         msgs: list[str] = []
 

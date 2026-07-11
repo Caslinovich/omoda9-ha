@@ -145,6 +145,7 @@ def _refresh_token() -> bool:
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(j, f, ensure_ascii=False)
+            os.chmod(tmp, 0o600)   # il token è una credenziale: leggibile solo dal proprietario
             os.replace(tmp, path)
         except Exception:
             return False

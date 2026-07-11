@@ -60,19 +60,35 @@ def refresh():
         return False
 
 
+def _call_env():
+    """Legge gli input dell'ATTUALE tentativo da os.environ al momento della CHIAMATA, non
+    all'import (stesso schema di wake._token_path). Il config flow scrive OMODA_EMAIL/OMODA_SRC_DIR
+    in os.environ prima di ogni tentativo, ma questo modulo resta in cache in sys.modules: le
+    costanti EMAIL/OMODA_DIR resterebbero congelate su ciò che ha visto il PRIMO tentativo → una
+    mail sbagliata (o il passaggio a un altro account) continuava a fallire fino al riavvio di HA."""
+    email = os.environ.get("OMODA_EMAIL", EMAIL)
+    src_dir = os.environ.get("OMODA_SRC_DIR", OMODA_DIR)
+    try:
+        timeout = int(os.environ.get("OMODA_OTP_TIMEOUT", str(_TIMEOUT)))
+    except (TypeError, ValueError):
+        timeout = _TIMEOUT
+    return email, src_dir, timeout
+
+
 def request_otp(emit=lambda m: None):
-    """Invia il codice OTP alla mail di Rino. True se l'invio è andato a buon fine."""
+    """Invia il codice OTP alla mail dell'utente. True se l'invio è andato a buon fine."""
+    email, src_dir, timeout = _call_env()
     emit("invio codice OTP alla mail…")
     try:
-        r = subprocess.run([PYEXE, "login_omoda.py", "invia", EMAIL],
-                           cwd=OMODA_DIR, capture_output=True, text=True, timeout=_TIMEOUT)
+        r = subprocess.run([PYEXE, "login_omoda.py", "invia", email],
+                           cwd=src_dir, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         emit("timeout invio OTP — riprova")
         return False
     out = (r.stdout or "") + (r.stderr or "")
     # H7: esito su returncode + sentinella stabile, non su sottostringhe localizzate
     if r.returncode == 0 and "RESULT: OK" in out:
-        emit(f"📧 Codice inviato a {EMAIL} — inseriscilo nel campo «Codice OTP» e premi «Conferma»")
+        emit(f"📧 Codice inviato a {email} — inseriscilo nel campo «Codice OTP» e premi «Conferma»")
         return True
     tail = out.strip().splitlines()[-1] if out.strip() else f"rc={r.returncode}"
     emit(f"invio OTP fallito: {tail[:120]}")
@@ -84,10 +100,11 @@ def confirm_otp(code, emit=lambda m: None):
     code = (code or "").strip()
     if not code:
         return False, "nessun codice inserito"
+    email, src_dir, timeout = _call_env()
     emit("conio il token col codice…")
     try:
-        r = subprocess.run([PYEXE, "prova_token.py", EMAIL, code],
-                           cwd=OMODA_DIR, capture_output=True, text=True, timeout=_TIMEOUT)
+        r = subprocess.run([PYEXE, "prova_token.py", email, code],
+                           cwd=src_dir, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, "timeout conio token"
     out = (r.stdout or "") + (r.stderr or "")

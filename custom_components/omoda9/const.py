@@ -142,8 +142,10 @@ MACRO_WAKE_WAIT = 35
 # restare "acceso" a vuoto. +60s di margine.
 MACRO_PRESET_S = 15 * 60 + 60
 
-# Anti-doppio-tap: l'auto esegue UN comando alla volta (A00082 = "veicolo occupato").
-# Dopo un comando, per questi secondi un nuovo comando ATTUATIVO viene rifiutato con un
-# messaggio chiaro invece di accodarsi/floodare. Il lock si libera prima se arriva la
-# conferma dall'auto. Cap di sicurezza in caso la conferma non arrivi.
-COMMAND_LOCK_S = 12
+# Coda comandi: l'auto esegue UN comando alla volta (A00082 = "veicolo occupato"), quindi i
+# comandi si serializzano. Un secondo comando (o un doppio-tap) ASPETTA il suo turno invece di
+# essere rifiutato. Dopo un invio si lascia respirare l'auto fino alla sua conferma MQTT o al
+# più COMMAND_SETTLE_S, così il prossimo della coda non parte mentre è ancora occupata.
+# COMMAND_QUEUE_WAIT limita l'attesa in coda: oltre, il comando fallisce con un messaggio chiaro.
+COMMAND_SETTLE_S = 5
+COMMAND_QUEUE_WAIT = 30

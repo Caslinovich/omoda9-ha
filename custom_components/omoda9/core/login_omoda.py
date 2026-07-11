@@ -117,6 +117,7 @@ def token(email, code, sms=False, area="39"):
         print("❌ nessuna combinazione ha funzionato (codice scaduto/sbagliato o campi diversi)."); return False
     with open("token.json", "w") as fh:
         json.dump(win, fh, indent=2, ensure_ascii=False)
+    os.chmod("token.json", 0o600)   # il token è una credenziale: leggibile solo dal proprietario
     tok = win.get("access_token") or (win.get("data") or {}).get("access_token")
     # LOW: non stampare il token (lo stdout può finire nei log) — solo conferma
     print("\n✅ LOGIN OK — token salvato in token.json.")

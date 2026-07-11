@@ -236,11 +236,8 @@ class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, 
         self._restored = value
 
     async def _wake_then(self, cmd: str, target: bool) -> None:
-        """Sveglia l'auto, attende che i moduli comfort siano alimentati, poi invia il comando."""
-        if self.coordinator.command_busy():
-            raise HomeAssistantError(
-                "Un altro comando è ancora in corso — l'auto ne esegue uno alla volta. "
-                "Attendi qualche secondo (guarda «Esito comando») e riprova.")
+        """Sveglia l'auto, attende che i moduli comfort siano alimentati, poi invia il comando.
+        I due invii passano dalla coda comandi del coordinator (uno alla volta, in ordine)."""
         self._cancel_expire()
         self._set_state(target)
         # sveglia (vehicleLocation = sveglia + GPS, benigno); non bloccare la macro se fallisce
@@ -248,12 +245,11 @@ class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, 
             await self.coordinator.async_send_command("localizza")
         except Exception:  # noqa: BLE001
             pass
-        await asyncio.sleep(MACRO_WAKE_WAIT)  # lascia accendere il bus comfort (e scade il lock)
+        await asyncio.sleep(MACRO_WAKE_WAIT)  # lascia accendere il bus comfort
         try:
             await self.coordinator.async_send_command(cmd)
         except Exception as err:  # noqa: BLE001
             self._set_state(False)
-            self.coordinator.clear_command_busy()
             self.async_write_ha_state()
             raise HomeAssistantError(f"Comando «{cmd}» non riuscito: {err}") from err
         if target:

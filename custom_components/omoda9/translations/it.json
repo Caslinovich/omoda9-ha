@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Omoda 9 / Jaecoo",
-        "description": "Inserisci l'email del tuo account Omoda/Jaecoo e il PIN del veicolo. Riceverai un codice OTP via email; VIN e ID account vengono rilevati automaticamente.",
+        "description": "Inserisci l'email del tuo account Omoda/Jaecoo e il PIN del veicolo. Riceverai un codice OTP via email; VIN e ID account vengono rilevati automaticamente.{reason}",
         "data": {
           "email": "Email dell'account",
           "pin": "PIN di controllo veicolo",
@@ -17,7 +17,7 @@
       },
       "otp": {
         "title": "Codice di verifica email",
-        "description": "Inserisci il codice OTP ricevuto via email.",
+        "description": "Inserisci il codice OTP ricevuto via email.{reason}",
         "data": {
           "code": "Codice OTP"
         }
@@ -38,7 +38,7 @@
       },
       "reauth_confirm": {
         "title": "Ri-autentica Omoda 9 / Jaecoo",
-        "description": "La sessione è scaduta (ad esempio perché è stata aperta l'app ufficiale). Un nuovo codice di verifica è stato inviato a {email}. Inseriscilo qui sotto per ripristinare l'accesso. Lascia il campo vuoto e conferma per rinviare il codice.",
+        "description": "La sessione è scaduta (ad esempio perché è stata aperta l'app ufficiale). Un nuovo codice di verifica è stato inviato a {email}. Inseriscilo qui sotto per ripristinare l'accesso. Lascia il campo vuoto e conferma per rinviare il codice.{reason}",
         "data": {
           "code": "Codice OTP"
         }

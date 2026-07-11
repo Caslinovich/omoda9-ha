@@ -363,19 +363,41 @@ def _mint_taskid(tuid):
         reason="pin")
 
 
-def get_taskid(tuid, emit=lambda m: None):
-    """Sorgente taskId, in ordine: env TASKID → file piggyback → checkPassword auto-coniato."""
-    t = os.environ.get("TASKID")
-    if t:
-        return t.strip(), "env"
-    try:
-        if os.path.exists(TASKID_FILE):
-            with open(TASKID_FILE) as fh:
-                v = fh.read().strip()
-            if v:
-                return v, "file"
-    except OSError:
-        pass
+# Cache in memoria del taskId. Coniarlo significa fare tutto il giro di checkPassword (PIN):
+# è la parte LENTA di ogni comando. Il taskId però resta valido per un po' → lo riusiamo e lo
+# riconiamo solo quando l'auto lo rifiuta (TASKID_INVALID) o scade il TTL. Così la maggior parte
+# dei comandi diventa una sola POST firmata invece di PIN + POST.
+_TASKID_TTL = int(os.environ.get("OMODA_TASKID_TTL", "600"))   # riuso fino a ~10 min
+_TASKID_CACHE = {"tid": None, "ts": 0.0}
+
+# Codici con cui l'auto dice "questo taskId non va bene" → si riconia e si riprova una volta.
+TASKID_INVALID = frozenset({"A00089", "A00546", "A00567"})
+
+
+def invalidate_taskid():
+    """Butta il taskId in cache (l'auto lo ha rifiutato come non valido/scaduto)."""
+    _TASKID_CACHE["tid"] = None
+    _TASKID_CACHE["ts"] = 0.0
+
+
+def get_taskid(tuid, emit=lambda m: None, force_mint=False):
+    """Sorgente taskId, in ordine: env TASKID → file piggyback → cache → checkPassword coniato.
+    `force_mint=True` salta env/file/cache e ne conia uno nuovo (usato al retry dopo un rifiuto:
+    ripescare la stessa sorgente rifiutata darebbe di nuovo lo stesso errore)."""
+    if not force_mint:
+        t = os.environ.get("TASKID")
+        if t:
+            return t.strip(), "env"
+        try:
+            if os.path.exists(TASKID_FILE):
+                with open(TASKID_FILE) as fh:
+                    v = fh.read().strip()
+                if v:
+                    return v, "file"
+        except OSError:
+            pass
+        if _TASKID_CACHE["tid"] and (time.time() - _TASKID_CACHE["ts"]) < _TASKID_TTL:
+            return _TASKID_CACHE["tid"], "cache"
     if MINT_TASKID:
         emit("conio taskId (checkPassword)…")
         try:
@@ -391,6 +413,8 @@ def get_taskid(tuid, emit=lambda m: None):
                 "PIN comandi non verificabile — riconfiguralo nelle impostazioni "
                 f"dell'integrazione ({e})", reason="pin") from e
         if tid:
+            _TASKID_CACHE["tid"] = tid
+            _TASKID_CACHE["ts"] = time.time()
             return tid, "checkPassword"
     return None, "none"
 
@@ -414,45 +438,57 @@ def send(cmd_key, emit=lambda m: None, params=None):
             "Sessione scaduta — riautentica dall'avviso di Home Assistant (nuovo codice OTP)",
             reason="reauth")
 
-    # get_taskid propaga CommandError (PIN/anti-lockout/sessione) col suo `reason`.
-    taskid, src = get_taskid(tuid, emit)
-    if not taskid:
-        # nessun taskId ma nessuna eccezione = conio disattivato e nessun taskId env/file.
-        emit("nessun taskId disponibile")
-        raise CommandError(
-            "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
-            reason="pin")
-
-    ts = int(time.time() * 1000)
-    body = dict(c["body"])
-    if params:
-        body.update(params)        # override parametrico (temperatura/durata/controlType/piano)
-    body.update({"clientType": "1", "seq": f"{VIN}-{ts}", "taskId": taskid, "vin": VIN})
-    m = tsp_sign.sign_body(body, ts)
-    payload = json.dumps(m, separators=(",", ":"), ensure_ascii=False).encode()
-    headers = {"Authorization": token, "timestamp": str(ts),
-               "Content-Type": "application/json; charset=utf-8", "User-Agent": "okhttp/4.9.2"}
     # path esplicito (es. antifurto su /act/theftAlarm/setSwitch) oppure il classico
     # /asc/vehicleControl/<endpoint> per i comandi veicolo standard.
     url = TSP_HOST + (c.get("path") or ("/asc/vehicleControl/" + c["endpoint"]))
-    emit(f"invio {c['name']} (taskId:{src})…")
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-            status = resp.status
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")
-        status = e.code
-    except Exception as e:
-        emit(f"errore rete: {e}")
-        raise CommandError(f"Errore di rete durante l'invio del comando: {e}")
 
-    code = None
-    try:
-        code = json.loads(raw).get("code")
-    except Exception:
-        pass
+    # Tentativo 1 col taskId riusato (veloce). Se l'auto lo rifiuta come non valido/scaduto,
+    # lo si riconia (checkPassword) e si riprova UNA volta sola.
+    for attempt in (1, 2):
+        # get_taskid propaga CommandError (PIN/anti-lockout/sessione) col suo `reason`.
+        taskid, src = get_taskid(tuid, emit, force_mint=(attempt == 2))
+        if not taskid:
+            # nessun taskId ma nessuna eccezione = conio disattivato e nessun taskId env/file.
+            emit("nessun taskId disponibile")
+            raise CommandError(
+                "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
+                reason="pin")
+
+        ts = int(time.time() * 1000)
+        body = dict(c["body"])
+        if params:
+            body.update(params)    # override parametrico (temperatura/durata/controlType/piano)
+        body.update({"clientType": "1", "seq": f"{VIN}-{ts}", "taskId": taskid, "vin": VIN})
+        m = tsp_sign.sign_body(body, ts)
+        payload = json.dumps(m, separators=(",", ":"), ensure_ascii=False).encode()
+        headers = {"Authorization": token, "timestamp": str(ts),
+                   "Content-Type": "application/json; charset=utf-8", "User-Agent": "okhttp/4.9.2"}
+        emit(f"invio {c['name']} (taskId:{src})…")
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", "replace")
+            status = e.code
+        except Exception as e:
+            emit(f"errore rete: {e}")
+            raise CommandError(f"Errore di rete durante l'invio del comando: {e}")
+
+        code = None
+        try:
+            code = json.loads(raw).get("code")
+        except Exception:
+            pass
+
+        # taskId rifiutato al primo giro → riconia e ripeti (l'utente non vede un falso errore).
+        if attempt == 1 and str(code) in TASKID_INVALID and MINT_TASKID:
+            invalidate_taskid()
+            emit("taskId non più valido → lo rinnovo e riprovo…")
+            continue
+        break
+
     meaning = CODE_MEANING.get(code, raw[:120])
     out = f"{c['name']}: HTTP {status} {code or ''} — {meaning}"
     emit(out)

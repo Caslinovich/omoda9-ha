@@ -53,7 +53,9 @@ import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
 PIN        = os.environ.get("PIN", os.environ.get("OMODA_PIN", ""))   # PIN di controllo (PER-ACCOUNT)
-PROV_LOG   = os.environ.get("OMODA_PROV_LOG", os.path.join(HERE, "data", "provision.jsonl"))
+# PRIVACY: i record contengono VIN/identificativi account → log OPT-IN, spento di default.
+# Si attiva solo valorizzando OMODA_PROV_LOG col path del file da scrivere.
+PROV_LOG   = os.environ.get("OMODA_PROV_LOG", "")
 
 # Endpoint BFF (legend-oj) della catena di provisioning — tutti POST, Bearer access_token + sign app.
 BFF_GETTUSERID    = "/tsp/v1/app/auth/getTuserId"
@@ -67,6 +69,8 @@ CAR_TOKEN_KEYS = ("token", "tspToken", "carToken", "accessToken", "vehicleToken"
 
 # ───────────────────────── util ────────────────────────────────────────────────
 def _log(rec: dict):
+    if not PROV_LOG:
+        return
     rec = {"ts": round(time.time(), 3),
            "iso": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()), **rec}
     try:
@@ -336,7 +340,7 @@ def run_command(publish, cmd: str = "remoteStart", pin: str = None,
             return {"ok": True, "code": code_c, "cmd": cmd}
         if str(code_c) == "A07900":
             publish(f"🟧 Ancora A07900 col car_token → resta in piedi l'ipotesi C "
-                    "(body cifrato SM4) o car_token errato. Vedi data/provision.jsonl.")
+                    "(body cifrato SM4) o car_token errato.")
         else:
             publish(f"ℹ️ Comando {cmd}: code={code_c} ({codes.meaning(code_c)}).")
         return {"ok": True, "code": code_c, "cmd": cmd, "accepted": False}

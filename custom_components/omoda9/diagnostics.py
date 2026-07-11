@@ -23,10 +23,25 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN, CERT_FILES
 
 # Chiavi da oscurare ovunque compaiano (config entry + eventuali dict annidati).
+# NB: «seq» sta qui perché nel payload realtime vale "<VIN>-<timestamp>" → contiene il VIN.
 TO_REDACT = {
-    "email", "pin", "vin", "tuserid",
+    "email", "pin", "vin", "tuserid", "seq",
     "lat", "lon", "latitude", "longitude", "position",
 }
+
+
+def _scrub_vin(obj: Any, vin: str) -> Any:
+    """Rete di sicurezza: toglie il VIN ovunque compaia come SOTTOSTRINGA, anche dentro un
+    campo che la redazione per-chiave non conosce (es. un id composto)."""
+    if not vin:
+        return obj
+    if isinstance(obj, dict):
+        return {k: _scrub_vin(v, vin) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_vin(v, vin) for v in obj]
+    if isinstance(obj, str) and vin in obj:
+        return obj.replace(vin, "**REDACTED**")
+    return obj
 
 
 async def async_get_config_entry_diagnostics(
@@ -59,10 +74,15 @@ async def async_get_config_entry_diagnostics(
 
     data = dict(coordinator.data or {})
     has_position = bool(data.get("position"))
+    vin = getattr(coordinator, "vin", "") or ""
     # La posizione GPS è sensibile (dove abiti) → mai esportata, neanche oscurata coord-per-coord.
     realtime = data.get("realtime")
     if isinstance(realtime, dict):
-        realtime = async_redact_data(realtime, TO_REDACT)
+        realtime = _scrub_vin(async_redact_data(realtime, TO_REDACT), vin)
+    # Telemetria 5A02 (stato porte/clima/sedili…): redazione per chiave + passata anti-VIN.
+    fields = data.get("fields")
+    if isinstance(fields, dict):
+        fields = _scrub_vin(async_redact_data(dict(fields), TO_REDACT), vin)
 
     diag["coordinator"] = {
         "region": {
@@ -92,9 +112,8 @@ async def async_get_config_entry_diagnostics(
             "wake_status": data.get("wake_status"),
             "probe_status": data.get("probe_status"),
             "realtime": realtime,
-            # Telemetria 5A02 (stato porte/clima/sedili…): utile al debug, non è un dato personale.
             "fields_count": len(data.get("fields") or {}),
-            "fields": data.get("fields"),
+            "fields": fields,
         },
     }
     return diag

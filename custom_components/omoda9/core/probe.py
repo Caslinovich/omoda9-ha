@@ -37,7 +37,9 @@ import wake as W
 import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
-PROBE_LOG  = os.environ.get("OMODA_PROBE_LOG", os.path.join(HERE, "data", "probe.jsonl"))
+# PRIVACY: il record grezzo contiene VIN e coordinate GPS → log OPT-IN, spento di default.
+# Si attiva solo valorizzando OMODA_PROBE_LOG col path del file da scrivere.
+PROBE_LOG  = os.environ.get("OMODA_PROBE_LOG", "")
 COOLDOWN_S = int(os.environ.get("PROBE_COOLDOWN", "120"))   # [2.0] 2 min: il realtime è read-only e l'auto resta online a lungo → letture opportunistiche frequenti (era 1800=30min, troppo restrittivo). I poll usano force=True e lo bypassano comunque.
 
 _BUSY = threading.Lock()
@@ -50,6 +52,8 @@ RICH_KEYS = ("lat", "lon", "altitude", "direction", "gpsSpeed", "vehicleSpeed",
 
 
 def _log(rec: dict):
+    if not PROBE_LOG:
+        return
     rec = {"ts": round(time.time(), 3),
            "iso": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()), **rec}
     try:
@@ -124,7 +128,7 @@ def probe_once(publish, force=False, on_data=None):
                 bits = ", ".join(f"{k}={v}" for k, v in rich.items())
                 publish(f"🟢🛰️ SVOLTA: dati realtime ricevuti ad auto sveglia! {bits}")
             else:
-                publish("🟢🛰️ Sonda: dati ricevuti ad auto sveglia (vedi data/probe.jsonl)")
+                publish("🟢🛰️ Sonda: dati ricevuti ad auto sveglia")
             return {"ok": True, "online": True, "got_data": True,
                     "codes": [c1, c2, c3], "rich": rich}
 
