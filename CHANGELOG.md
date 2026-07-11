@@ -6,8 +6,28 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.25 — 2026-07-11
+
 ### 🇮🇹 Italiano
 
+- **Comandi più veloci.** Prima ogni comando rifaceva da capo la verifica del PIN col server: ora
+  l'autorizzazione ottenuta viene riusata per una decina di minuti, quindi la maggior parte dei
+  comandi parte subito. Se l'auto la rifiuta perché scaduta, l'integrazione la rinnova e riprova
+  da sola, senza mostrarti un errore.
+- **Niente più "un altro comando è in corso".** L'auto esegue un comando alla volta: prima, se ne
+  premevi un secondo mentre il primo era in volo, veniva rifiutato con un errore. Ora **si mette in
+  coda** e parte da solo appena l'auto ha confermato il precedente.
+- **Sicurezza e riservatezza.** Tre correzioni: l'integrazione non scrive più su disco i dati grezzi
+  dell'auto (che contenevano telaio e posizione GPS); il file di diagnostica che puoi condividere per
+  chiedere aiuto **non contiene più il numero di telaio**; i file con le credenziali di accesso sono
+  ora leggibili solo dal proprietario.
+- **Configurazione iniziale: correggere l'email adesso funziona.** Se sbagliavi a digitare l'email,
+  ogni nuovo tentativo continuava a usare quella vecchia e falliva finché non riavviavi Home
+  Assistant. Ora ogni tentativo usa l'email che hai appena scritto. In più, se il codice non parte,
+  ora **vedi scritto il motivo** sotto al modulo (prima non appariva da nessuna parte).
+- **Basta codice vecchio dopo un aggiornamento.** In certi casi, dopo un update, Home Assistant
+  continuava a far girare la versione precedente di alcune parti interne. Ora vengono ricaricate
+  sempre da zero: aggiornare e riavviare basta.
 - **Tolto un doppione tra gli indicatori del motore.** C'erano due voci per lo stato del motore
   ("Motore" e "Motore acceso") che mostravano la stessa identica informazione: ne resta una sola
   ("Motore"), quella storica. Nessuna funzione persa, solo un po' di ordine in più.
@@ -19,6 +39,24 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ### 🇬🇧 English
 
+- **Faster commands.** Every command used to redo the full PIN check with the server: the
+  authorisation is now reused for about ten minutes, so most commands go straight through. If the
+  car rejects it as expired, the integration renews it and retries on its own, without showing you
+  an error.
+- **No more "another command is still in progress".** The car runs one command at a time: before, a
+  second press while the first was in flight was rejected with an error. Now it **waits its turn**
+  and runs as soon as the car has confirmed the previous one.
+- **Security and privacy.** Three fixes: the integration no longer writes the raw vehicle data to
+  disk (it contained the VIN and the GPS position); the diagnostics file you can share when asking
+  for help **no longer contains the VIN**; the files holding your access credentials are now
+  readable by their owner only.
+- **Setup: correcting your email now works.** If you mistyped your email, every retry kept using the
+  old one and failed until you restarted Home Assistant. Each attempt now uses the email you just
+  typed. Also, when the code can't be sent, **the reason is now shown** under the form (previously
+  it appeared nowhere).
+- **No more old code running after an update.** In some cases, after an update, Home Assistant kept
+  running the previous version of some internal parts. They are now always reloaded from scratch:
+  updating and restarting is enough.
 - **Removed a duplicate engine indicator.** There were two entries for the engine state ("Engine"
   and "Engine running") showing the exact same information: only one remains ("Engine"), the
   original. No functionality lost, just a bit tidier.
@@ -26,6 +64,15 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
   accept the command security code, the integration now **shows and logs the exact code** returned
   by the server. This tells a genuine "wrong PIN" apart from other causes (vehicle permissions, a
   temporary server issue): useful if commands still won't go through after you've corrected the PIN.
+
+### 🙏 Grazie / Credits
+
+Le migliorie di questa versione (velocità dei comandi, coda, correzioni di sicurezza e privacy,
+setup, ricarica del codice dopo un update) nascono dal lavoro di **[JackRonan](https://github.com/JackRonan)**
+nel suo fork inglese [omoda-jaecoo-ha](https://github.com/JackRonan/omoda-jaecoo-ha), da cui sono
+state riportate qui. Grazie di cuore per averle trovate, risolte e condivise. — *The improvements in
+this release (command speed, queueing, security and privacy fixes, setup, code reloading after an
+update) come from **JackRonan**'s work on his English fork, and were ported back here. Thank you!*
 
 ## v1.5.24 — 2026-07-06
 
