@@ -6,6 +6,52 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.26 — 2026-07-19
+
+### 🇮🇹 Italiano
+
+- **Meno rischio di bloccare il PIN dell'auto.** Se due richieste partivano nello stesso momento
+  (per esempio premi "Sveglia" due volte, o un comando mentre l'auto si sta svegliando), potevano
+  provare il codice di sicurezza in parallelo e "consumare" più tentativi del previsto: con un PIN
+  sbagliato si rischiava di avvicinarsi al blocco dell'account. Ora le richieste si mettono in fila
+  e viene rispettato il limite di tentativi che l'integrazione si è data.
+- **Reinserire lo stesso PIN ora sblocca davvero.** Se dopo un errore riconfermavi il PIN identico
+  a prima (perché in realtà il problema non era il PIN), il blocco di sicurezza restava attivo e i
+  comandi continuavano a non partire per diversi minuti. Ora, ogni volta che confermi il PIN
+  — dall'avviso di riparazione o dalle impostazioni — si riparte puliti.
+- **Se la sveglia dell'auto fallisce, ora te lo dice.** Quando il tentativo di risveglio non
+  riusciva per PIN o sessione scaduta, l'errore restava nascosto nei log: nessun avviso, nessuna
+  richiesta di reinserire il codice. Ora compare l'avviso giusto, esattamente come quando premi un
+  pulsante: correggi il PIN o rifai l'accesso e riprovi.
+- **Niente più letture in sottofondo dopo aver spento l'integrazione.** Se ricaricavi o rimuovevi
+  l'integrazione mentre l'auto era in carica, un controllo automatico poteva restare acceso e
+  continuare a interrogare il server anche dopo. Ora si ferma insieme a tutto il resto.
+- **L'interruttore "Aggiornamento automatico" ora ferma tutto.** Spegnendolo mentre l'auto era
+  sotto carica, il controllo ravvicinato della ricarica proseguiva lo stesso. Ora quando è spento
+  l'integrazione non contatta più l'auto da sola, come ci si aspetta.
+
+### 🇬🇧 English
+
+- **Less risk of locking your car's PIN.** If two requests started at the same moment (for example
+  pressing "Wake" twice, or sending a command while the car is waking up), they could try the
+  security code in parallel and burn more attempts than intended — with a wrong PIN that meant
+  getting closer to an account lockout. Requests are now queued and the attempt limit the
+  integration sets for itself is properly respected.
+- **Re-entering the same PIN now really unblocks it.** If after an error you confirmed the very
+  same PIN (because the problem wasn't the PIN after all), the safety block stayed active and
+  commands kept failing for several minutes. Now every time you confirm the PIN — from the repair
+  notice or from the settings — it starts fresh.
+- **If waking the car fails, you're now told.** When the wake-up attempt failed because of the PIN
+  or an expired session, the error stayed hidden in the logs: no notice, no request to re-enter the
+  code. Now you get the proper notice, exactly as when you press a button: fix the PIN or sign in
+  again, then retry.
+- **No more background readings after switching the integration off.** If you reloaded or removed
+  the integration while the car was charging, an automatic check could stay alive and keep querying
+  the server afterwards. It now stops together with everything else.
+- **The "Automatic update" switch now stops everything.** Turning it off while the car was charging
+  did not stop the close-interval charge tracking. Now, when it is off, the integration no longer
+  contacts the car on its own — as you would expect.
+
 ## v1.5.25 — 2026-07-11
 
 ### 🇮🇹 Italiano
