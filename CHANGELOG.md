@@ -6,6 +6,20 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **Aggiornamento di manutenzione: per te non cambia nulla.** Non ci sono nuove funzioni né
+  correzioni visibili. Questa versione aggiunge solo strumenti interni che aiutano chi sviluppa
+  l'integrazione a capire meglio i problemi segnalati. Restano spenti e non influiscono in alcun
+  modo sul funzionamento né sui consumi: puoi aggiornare tranquillamente.
+
+### 🇬🇧 English
+
+- **Maintenance update: nothing changes for you.** No new features and no visible fixes. This
+  release only adds internal tooling that helps the integration's developer investigate reported
+  problems. It stays switched off and has no effect whatsoever on behaviour or resource usage —
+  you can update safely.
+
 ## v1.5.27 — 2026-07-19
 
 ### 🇮🇹 Italiano
