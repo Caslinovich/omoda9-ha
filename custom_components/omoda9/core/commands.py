@@ -35,6 +35,7 @@ from . import wake
 from . import tsp_sign
 from . import omoda_auth as A
 from . import codes
+from .pin_lockout import PinLockout, PinLockedError
 # H8: rimosso `importlib.reload(tsp_sign)` a import-time (side-effect inutile; tsp_sign
 # non viene mutato altrove e ricaricarlo all'import poteva azzerare eventuali monkeypatch).
 
@@ -268,27 +269,27 @@ class CommandError(Exception):
         self.reason = reason
         self.retryable = code in RETRYABLE_CODES
 
-# H6 anti-lockout: stop dopo N checkPassword falliti consecutivi entro una finestra,
-# per non far scattare il blocco PIN dell'account (un PIN sbagliato incrementa gli
-# errori lato Chery). Un successo (taskId ottenuto) azzera il contatore.
-_PIN_FAIL = {"n": 0, "ts": 0.0}
-# P0-1 (2026-07-19): il conio del taskId deve essere SERIALIZZATO. Senza lock due
-# chiamate concorrenti (es. fallback di _wake + comando UI, o doppio "Sveglia") leggono
-# entrambe `_PIN_FAIL["n"]` PRIMA che l'altra lo incrementi → superano la guardia e
-# mandano 2 checkPassword con lo stesso PIN errato, avvicinando il lockout account.
-# Il lock copre TUTTO `_mint_taskid` (guardia → POST → increment/reset) e `reset_pin_lockout`.
-_MINT_LOCK = threading.Lock()
+# H6/P0-1/P2-3 anti-lockout: stop dopo N checkPassword falliti consecutivi entro una
+# finestra, per non far scattare il blocco PIN dell'ACCOUNT Chery (ogni PIN sbagliato
+# incrementa gli errori lato loro, e quel blocco non si risolve da Home Assistant).
+#
+# Lo stato e il suo lock vivono ora dentro `PinLockout` (core/pin_lockout.py): l'unico
+# modo di coniare è `attempt()`, che serializza guardia + POST + aggiornamento del
+# contatore. Prima erano un dizionario e un lock separati, e bastava prendere il lock
+# troppo tardi per riaprire la corsa P0-1.
+_LOCKOUT = PinLockout(
+    max_fail=int(os.environ.get("OMODA_PIN_FAIL_MAX", "2")),
+    window_s=int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600")),
+)
 # Monitor diagnostico (diag.py): callback module-level impostato dal coordinator SOLO a
 # monitor acceso — `core/` non conosce il coordinator e non deve importarlo. A `None`
 # (default) il codice è dormiente e non costa nulla.
 DIAG_HOOK = None
-# Conii SOVRAPPOSTI: contatore d'ingresso tenuto FUORI da `_MINT_LOCK`, altrimenti
-# vedrebbe sempre 1 (il lock serializza). Se all'ingresso risulta >1, un secondo thread
-# sta aspettando il lock proprio ora: è la corsa P0-1 osservata dal vivo.
+# Conii SOVRAPPOSTI: contatore d'ingresso tenuto FUORI dal lock dell'anti-lockout,
+# altrimenti vedrebbe sempre 1 (il lock serializza). Se all'ingresso risulta >1, un
+# secondo thread sta aspettando il lock proprio ora: è la corsa P0-1 vista dal vivo.
 _MINT_INFLIGHT = {"n": 0}
 _MINT_INFLIGHT_LOCK = threading.Lock()
-_PIN_FAIL_MAX = int(os.environ.get("OMODA_PIN_FAIL_MAX", "2"))
-_PIN_FAIL_WINDOW = int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600"))
 # P1-2 — classificazione di checkPassword PER CODICE (prima: «tutto ciò che non dà un taskId
 # = PIN errato», che è falso e fa due danni: propone il rimedio sbagliato all'utente e conta
 # verso l'anti-lockout un errore che col PIN non c'entra nulla).
@@ -299,7 +300,7 @@ _PIN_FAIL_WINDOW = int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600"))
 #   tutto il resto  → resta sul ramo PIN (default CONSERVATIVO voluto: A00285/A00282 e i codici
 #                    ancora sconosciuti sono, per quanto osservato, davvero PIN errato)
 #
-# Nessuno dei due insiemi sopra incrementa `_PIN_FAIL` né apre il Repair «PIN comandi errato».
+# Nessuno dei due insiemi sopra conta verso il blocco né apre il Repair «PIN comandi errato».
 _SESSION_CODES = {"A00000"}
 _CONFIG_CODES = {
     "A00374", "A00554",                      # permessi/autorizzazione sul veicolo
@@ -310,14 +311,12 @@ _CONFIG_CODES = {
 def reset_pin_lockout() -> None:
     """Azzera il contatore anti-lockout dei PIN errati.
 
-    `_PIN_FAIL` è module-level: un semplice reload dell'entry (es. dopo aver corretto
-    il PIN) NON ricarica il modulo, quindi senza questo reset i comandi resterebbero
-    bloccati fino allo scadere della finestra (600s) o a un riavvio di HA. Va chiamato
-    quando il PIN viene riconfigurato (config flow / Repair) e dal `_bind_core` del
-    coordinator quando rileva che il PIN è cambiato."""
-    with _MINT_LOCK:
-        _PIN_FAIL["n"] = 0
-        _PIN_FAIL["ts"] = 0.0
+    Lo stato vive nel processo, non nel config entry: un semplice reload dell'entry
+    (es. dopo aver corretto il PIN) NON lo azzera, quindi senza questa chiamata i
+    comandi resterebbero bloccati fino allo scadere della finestra o a un riavvio di
+    HA. Va invocata a ogni riconfigurazione del PIN (config flow / Repair) e dal
+    `_bind_core` del coordinator quando rileva che il PIN è cambiato."""
+    _LOCKOUT.reset()
 
 
 def _mint_taskid(tuid):
@@ -337,7 +336,7 @@ def _mint_taskid(tuid):
         DIAG_HOOK("pin_fail_concurrent", inflight=inflight)
     try:
         tid = _mint_taskid_impl(tuid)
-        DIAG_HOOK("pin_event", outcome="ok", pin_fail_n=_PIN_FAIL["n"])
+        DIAG_HOOK("pin_event", outcome="ok", pin_fail_n=_LOCKOUT.tentativi_falliti)
         return tid
     except CommandError as err:
         # "fail" = il backend ha risposto e ha rifiutato; "empty" = PIN non configurato;
@@ -353,7 +352,8 @@ def _mint_taskid(tuid):
         else:
             outcome = "blocked"
         DIAG_HOOK("pin_event", outcome=outcome, reason=getattr(err, "reason", None), cp_code=code,
-                  pin_fail_n=_PIN_FAIL["n"], pin_fail_max=_PIN_FAIL_MAX)
+                  pin_fail_n=_LOCKOUT.tentativi_falliti,
+                  pin_fail_max=_LOCKOUT.max_fail)
         raise
     except Exception as err:  # noqa: BLE001 — il monitor osserva, non altera il flusso
         DIAG_HOOK("pin_event", outcome="error", err_type=type(err).__name__)
@@ -373,79 +373,94 @@ def _mint_taskid_impl(tuid):
 
        Su fallimento solleva SEMPRE CommandError con `reason` ("pin" o "reauth") così il
        coordinator può instradare il rimedio giusto (riconfig PIN vs riautenticazione)."""
-    with _MINT_LOCK:   # P0-1: guardia + POST + increment tutti atomici
-        if not (PIN or "").strip():
-            raise CommandError(
-                "PIN comandi non configurato — impostalo nelle impostazioni dell'integrazione",
-                reason="pin")
-        now = time.time()
-        if _PIN_FAIL["n"] >= _PIN_FAIL_MAX and (now - _PIN_FAIL["ts"]) < _PIN_FAIL_WINDOW:
-            raise CommandError(
-                f"PIN comandi bloccato temporaneamente ({_PIN_FAIL['n']} tentativi errati) — "
-                "riconfigura il PIN nelle impostazioni dell'integrazione, poi riprova",
-                reason="pin")
-
-        import requests
-        access = wake._access_token()
-        extra = {"Authorization": f"Bearer {access}",
-                 "Content-Type": "application/json; charset=UTF-8",
-                 "Accept": "application/json, text/plain, */*"}
-
-        def bff(path, body):
-            H = A.headers_post(path, extra=extra)
-            r = requests.post(A.BFF + path, data=json.dumps(body), headers=H, timeout=25)
-            try:
-                j = r.json()
-            except Exception:
-                return {"_raw": r.text[:200]}
-            # MED: il BFF può restituire un top-level non-dict (stringa) → normalizza a {}
-            return j if isinstance(j, dict) else {}
-
-        bff("/tsp/v1/app/vmc/queryList", {})
-        bff("/tsp/v1/app/vmc/setVecDefault", {"vin": VIN})
-        plain = hashlib.md5(PIN.encode()).hexdigest()
-        password = A.sm4_code(plain, "padRight32")
-        j = bff("/tsp/v1/app/cpm/checkPassword",
-                {"vin": VIN, "tUserId": str(tuid), "channelId": A.CHANNEL_ID,
-                 "password": password, "needDecode": 0, "scene": 0, "type": 0})
-        data = j.get("data") if isinstance(j.get("data"), dict) else {}
-        tid = data.get("taskId") or j.get("taskId")
-        if tid:
-            _PIN_FAIL["n"] = 0          # successo → azzera il contatore anti-lockout
-            return tid
-        # nessun taskId: distinguo la CAUSA per instradare il rimedio giusto.
-        code = j.get("code")
-        # DIAGNOSTICA (2026-07-06): il codice/messaggio GREZZO di checkPassword è l'UNICO modo per
-        # sapere se è davvero un PIN errato o un'altra causa (permessi veicolo, parametri scene/
-        # channelId, backend). Finora NON veniva loggato → dal log l'anti-lockout diceva solo "PIN
-        # errati", che è la nostra INFERENZA. Ora logghiamo code + message reali (campi non sensibili).
-        cp_msg = str(j.get("message") or j.get("msg") or "").strip()
-        detail = f"code={code}" + (f" '{cp_msg[:100]}'" if cp_msg else "")
-        _LOGGER.warning("[taskId] checkPassword NON ha restituito un taskId → %s "
-                        "(risposta backend grezza; se non è un PIN errato la causa è qui)", detail)
-        if str(code) in _SESSION_CODES:
-            # sessione/token (A00000): NON è colpa del PIN → non contare l'anti-lockout, chiedi reauth.
-            raise CommandError(
-                f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
-                "Home Assistant (nuovo codice OTP)",
-                code=str(code), reason="reauth")
-        if str(code) in _CONFIG_CODES:
-            # P1-2: permessi veicolo o richiesta rifiutata per come è costruita. Il PIN può
-            # essere perfettamente corretto → NON incrementare l'anti-lockout e NON aprire il
-            # Repair PIN (manderebbe l'utente a cambiare un PIN giusto). Solo avviso.
-            raise CommandError(
-                f"Comando rifiutato dal backend [checkPassword {detail}] — non è il PIN: "
-                "l'account non ha il permesso su questa auto oppure la richiesta è stata "
-                "respinta. Riprova più tardi; se persiste servono i log.",
-                code=str(code), reason="config")
-        # ogni altro esito senza taskId = molto probabilmente PIN comandi errato → conta e chiedi
-        # la riconfig-PIN. Il `detail` (code reale) è ora nel messaggio e nel log per confermarlo.
-        _PIN_FAIL["n"] += 1
-        _PIN_FAIL["ts"] = now
+    # PIN mancante: si fallisce PRIMA di entrare nell'anti-lockout. Un PIN non configurato
+    # non è un tentativo errato — non deve consumare la soglia né toccare il backend.
+    if not (PIN or "").strip():
         raise CommandError(
-            f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo nelle "
-            "impostazioni dell'integrazione",
-            code=str(code) if code else None, reason="pin")
+            "PIN comandi non configurato — impostalo nelle impostazioni dell'integrazione",
+            reason="pin")
+
+    # P2-3: `attempt()` prende il lock, applica la guardia e lo tiene per tutta la chiamata
+    # di rete. È l'unico modo di coniare: la corsa P0-1 non è più esprimibile.
+    try:
+        with _LOCKOUT.attempt() as tentativo:
+            return _checkpassword(tuid, tentativo)
+    except PinLockedError as bloccato:
+        raise CommandError(
+            f"PIN comandi bloccato temporaneamente ({bloccato.tentativi} tentativi errati) — "
+            "riconfigura il PIN nelle impostazioni dell'integrazione, poi riprova",
+            reason="pin") from None
+
+
+def _checkpassword(tuid, tentativo):
+    """Catena BFF vera e propria. Gira col lock dell'anti-lockout già preso; dichiara
+    l'esito su `tentativo` SOLO quando è davvero attribuibile al PIN."""
+    import requests
+    access = wake._access_token()
+    extra = {"Authorization": f"Bearer {access}",
+             "Content-Type": "application/json; charset=UTF-8",
+             "Accept": "application/json, text/plain, */*"}
+
+    def bff(path, body):
+        H = A.headers_post(path, extra=extra)
+        r = requests.post(A.BFF + path, data=json.dumps(body), headers=H, timeout=25)
+        try:
+            j = r.json()
+        except Exception:
+            return {"_raw": r.text[:200]}
+        # MED: il BFF può restituire un top-level non-dict (stringa) → normalizza a {}
+        return j if isinstance(j, dict) else {}
+
+    bff("/tsp/v1/app/vmc/queryList", {})
+    bff("/tsp/v1/app/vmc/setVecDefault", {"vin": VIN})
+    plain = hashlib.md5(PIN.encode()).hexdigest()
+    password = A.sm4_code(plain, "padRight32")
+    j = bff("/tsp/v1/app/cpm/checkPassword",
+            {"vin": VIN, "tUserId": str(tuid), "channelId": A.CHANNEL_ID,
+             "password": password, "needDecode": 0, "scene": 0, "type": 0})
+    data = j.get("data") if isinstance(j.get("data"), dict) else {}
+    tid = data.get("taskId") or j.get("taskId")
+    if tid:
+        tentativo.riuscito()      # il PIN è corretto → la soglia riparte da zero
+        return tid
+
+    # nessun taskId: distinguo la CAUSA per instradare il rimedio giusto.
+    code = j.get("code")
+    # DIAGNOSTICA (2026-07-06): il codice/messaggio GREZZO di checkPassword è l'UNICO modo per
+    # sapere se è davvero un PIN errato o un'altra causa (permessi veicolo, parametri scene/
+    # channelId, backend). Finora NON veniva loggato → dal log l'anti-lockout diceva solo "PIN
+    # errati", che è la nostra INFERENZA. Ora logghiamo code + message reali (campi non sensibili).
+    cp_msg = str(j.get("message") or j.get("msg") or "").strip()
+    detail = f"code={code}" + (f" '{cp_msg[:100]}'" if cp_msg else "")
+    _LOGGER.warning("[taskId] checkPassword NON ha restituito un taskId → %s "
+                    "(risposta backend grezza; se non è un PIN errato la causa è qui)", detail)
+
+    # NB: nei due rami qui sotto il tentativo resta NON dichiarato di proposito → non
+    # conta verso il blocco. Non è il PIN, e contarlo avvicinerebbe il blocco
+    # dell'account reale per una causa che col PIN non c'entra nulla (P1-2).
+    if str(code) in _SESSION_CODES:
+        # sessione/token (A00000): rimedio = riautenticazione, non riconfigurare il PIN.
+        raise CommandError(
+            f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
+            "Home Assistant (nuovo codice OTP)",
+            code=str(code), reason="reauth")
+    if str(code) in _CONFIG_CODES:
+        # permessi veicolo o richiesta rifiutata per come è costruita: il PIN può essere
+        # perfettamente corretto → nessun Repair PIN (manderebbe a cambiare un PIN giusto).
+        raise CommandError(
+            f"Comando rifiutato dal backend [checkPassword {detail}] — non è il PIN: "
+            "l'account non ha il permesso su questa auto oppure la richiesta è stata "
+            "respinta. Riprova più tardi; se persiste servono i log.",
+            code=str(code), reason="config")
+
+    # ogni altro esito senza taskId = molto probabilmente PIN comandi errato → conta verso
+    # il blocco e chiedi la riconfig-PIN (default conservativo voluto). Il `detail` col
+    # codice reale resta nel messaggio e nel log per poterlo confermare.
+    tentativo.fallito()
+    raise CommandError(
+        f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo nelle "
+        "impostazioni dell'integrazione",
+        code=str(code) if code else None, reason="pin")
 
 
 # Cache in memoria del taskId. Coniarlo significa fare tutto il giro di checkPassword (PIN):
