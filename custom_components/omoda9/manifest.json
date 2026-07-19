@@ -15,5 +15,5 @@
     "numpy>=1.21",
     "pillow>=9.0"
   ],
-  "version": "1.5.27"
+  "version": "1.5.28"
 }
