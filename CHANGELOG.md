@@ -6,6 +6,65 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.27 — 2026-07-19
+
+### 🇮🇹 Italiano
+
+- **Non ti chiede più di rifare l'accesso quando è solo internet che fa i capricci.** Se il
+  collegamento con il server dell'auto cadeva per un attimo, poteva comparire la richiesta di
+  rientrare con un nuovo codice via email — inutile, perché la sessione era ancora buona. Ora
+  l'integrazione distingue "sessione davvero scaduta" da "problema di rete passeggero" e ti
+  disturba solo quando serve per davvero.
+- **Un accesso in meno da rifare a mano.** In alcuni casi la sessione poteva essere rinnovata da
+  sola, in silenzio, ma l'integrazione non ci provava e ti chiedeva subito il codice via email.
+  Ora tenta prima il rinnovo automatico: spesso non dovrai fare nulla.
+- **Basta con il falso "PIN sbagliato".** Quando l'auto rifiutava un comando per motivi che col
+  PIN non c'entrano nulla (per esempio l'account non ha i permessi su quella vettura), ti veniva
+  comunque detto che il PIN era errato e ti veniva chiesto di cambiarlo. Peggio: quel rifiuto
+  veniva contato come tentativo sbagliato e ti avvicinava al blocco del PIN. Ora ogni rifiuto
+  viene riconosciuto per quello che è: il messaggio dice la causa vera, il PIN corretto non viene
+  più messo in discussione e non si consumano tentativi per colpa di errori che non sono tuoi.
+- **Il PIN non si vede più in chiaro.** Nelle schermate per cambiare il PIN dei comandi, il codice
+  appariva scritto per esteso. Ora è mascherato con i pallini, come una normale password.
+- **Il codice via email è più al riparo.** Email e codice di verifica non vengono più passati in un
+  modo che, su alcuni sistemi, poteva renderli visibili ad altri programmi in esecuzione. Inoltre,
+  quando spegni o rimuovi l'integrazione, PIN ed email non restano più in memoria.
+- **Il file di diagnostica non rivela più dove tieni i certificati.** Se lo invii per farti aiutare,
+  ora il percorso della cartella (che spesso contiene il tuo nome utente) viene oscurato come già
+  accadeva per email, targa e posizione.
+- **Il nome del sensore "Dati auto aggiornati" ora è tradotto** anche in italiano e in inglese,
+  come tutti gli altri.
+- **Per chi ci aiuta a trovare i problemi:** ora è possibile chiedere a Home Assistant i log
+  dettagliati dell'integrazione dalla sua pagina, senza smanettare nei file di configurazione.
+
+### 🇬🇧 English
+
+- **No more "please sign in again" when it's just the internet acting up.** If the connection to
+  the car's server dropped for a moment, you could be asked to sign in again with a new email
+  code — pointless, since the session was still fine. The integration now tells a genuinely
+  expired session apart from a passing network glitch, and only bothers you when it really matters.
+- **One less sign-in to do by hand.** In some cases the session could have been renewed silently on
+  its own, but the integration didn't try and asked you for the email code straight away. It now
+  attempts the automatic renewal first: often you won't have to do anything.
+- **No more false "wrong PIN".** When the car refused a command for reasons that have nothing to do
+  with the PIN (for example, the account lacks permissions on that vehicle), you were still told
+  the PIN was wrong and asked to change it. Worse, that refusal counted as a failed attempt and
+  pushed you closer to having your PIN locked. Every refusal is now recognised for what it is: the
+  message states the real cause, a correct PIN is no longer questioned, and attempts are no longer
+  used up because of errors that aren't yours.
+- **Your PIN is no longer shown in plain text.** On the screens for changing the command PIN, the
+  code was displayed in full. It is now masked with dots, like any normal password.
+- **The email code is better protected.** Your email address and verification code are no longer
+  passed in a way that, on some systems, could make them visible to other running programs. Also,
+  when you shut down or remove the integration, the PIN and email no longer linger in memory.
+- **The diagnostics file no longer reveals where you keep your certificates.** If you send it in to
+  get help, the folder path (which often contains your username) is now hidden, just as your email,
+  VIN and location already were.
+- **The "Car data updated" sensor name is now translated** into both Italian and English, like all
+  the others.
+- **For those helping us track down problems:** you can now ask Home Assistant for the integration's
+  detailed logs from its own page, without editing configuration files by hand.
+
 ## v1.5.26 — 2026-07-19
 
 ### 🇮🇹 Italiano
