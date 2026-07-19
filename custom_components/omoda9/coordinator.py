@@ -172,6 +172,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._hv_poll_unsub = None    # timer auto-rischedulante del follow-up HV
         self._hv_poll_count = 0       # letture ravvicinate fatte nella finestra HV-on (cap HV_ON_POLL_MAX)
         self._startup_probe_unsub = None  # one-shot: semina il follow-up subito dopo l'avvio
+        # P0-4: `async_stop` cancella i timer, ma una `async_probe` GIÀ IN VOLO (executor) al
+        # ritorno chiamava `_arm_hv_followup` e ne ri-armava uno NUOVO → il poll cloud
+        # sopravviveva all'unload/riavvio dell'integrazione. Questo flag è il punto di non ritorno.
+        self._closing = False
         # battito di rilevamento marcia (sola lettura): fa partire il refresh automatico durante un
         # viaggio, dato che l'auto in movimento NON manda push MQTT. Vedi DRIVE_WATCH_EVERY.
         self._drive_watch_unsub = None
@@ -330,6 +334,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             if self._drive_watch_unsub is not None:
                 self._drive_watch_unsub()
                 self._drive_watch_unsub = None
+            # P0-5: fermare anche il follow-up HV/ricarica, altrimenti con lo switch
+            # "Aggiornamento automatico" su OFF durante una carica il loop continuava a
+            # interrogare il cloud ogni pochi minuti (si auto-rischedula da solo).
+            if self._hv_poll_unsub is not None:
+                self._hv_poll_unsub()
+                self._hv_poll_unsub = None
+            self._hv_poll_count = 0
 
     def async_start_drive_watch(self) -> None:
         """Avvia il battito di rilevamento marcia (sola lettura). È legato a `poll_enabled`
@@ -477,6 +488,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         chiamato in executor da async_unload_entry. `disconnect()` PRIMA di
         `loop_stop()`: così il loop processa il CONNACK/DISCONNECT e il thread esce
         pulito senza un join che attende il keepalive."""
+        self._closing = True   # P0-4: da qui nessun timer può più essere ri-armato
         if self._keepalive_unsub is not None:
             self._keepalive_unsub()
             self._keepalive_unsub = None
@@ -573,7 +585,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # periodico dei 39 min) e segue l'avanzamento. `field_on` come in _is_plugged().
         from .entity import field_on
         plugged = field_on(fields_copy.get("chargeGunState"))
-        if (driving or plugged) and self._hv_poll_unsub is None and not is_confirmation:
+        # P0-5: rispetta lo switch "Aggiornamento automatico" (e lo stop) anche su questa
+        # via d'ingresso, altrimenti un push MQTT ri-accendeva il follow-up a poll disattivato.
+        if (driving or plugged) and self._hv_poll_unsub is None and not is_confirmation \
+                and self.poll_enabled and not self._closing:
             self.hass.loop.call_soon_threadsafe(
                 lambda: self.hass.async_create_task(self.async_probe(force=True))
             )
@@ -776,6 +791,15 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 self._send_command("localizza")
             except Exception as err:  # noqa: BLE001 — il fallback non deve far fallire la sveglia
                 emit(f"fallback Localizza fallito: {err}")
+                # P0-3: `_send_command` qui è chiamato "a mano" (fuori da async_send_command),
+                # quindi il routing del rimedio non scattava: un PIN errato bruciava un
+                # tentativo di anti-lockout in SILENZIO, senza Repair né reauth. Stesso
+                # instradamento della UI, schedulato sul loop (siamo in executor).
+                reason = getattr(err, "reason", None)
+                if reason == "reauth":
+                    self.hass.add_job(self.entry.async_start_reauth, self.hass)
+                elif reason == "pin":
+                    self.hass.add_job(self._raise_pin_issue, str(err))
 
     def _is_hv_on(self) -> bool:
         """True se l'alta tensione è accesa (marcia, ricarica o clima): è l'UNICO stato in cui
@@ -817,6 +841,15 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             rilassato (`CHARGING_POLL_EVERY`) e cap molto più alto (`CHARGING_POLL_MAX`).
         Durante una ricarica l'HV è acceso, quindi il realtime ha batteria/corrente/tempo-residuo
         veri: è proprio questo che permette il refresh automatico mentre la spina è collegata."""
+        # P0-4/P0-5: il loop si auto-rischedula, quindi qui è l'UNICO punto in cui si può
+        # spezzare. Se l'integrazione si sta scaricando o l'utente ha spento l'aggiornamento
+        # automatico, si esce senza ri-armare (e si libera un eventuale timer residuo).
+        if self._closing or not self.poll_enabled:
+            if self._hv_poll_unsub is not None:
+                self._hv_poll_unsub()
+                self._hv_poll_unsub = None
+            self._hv_poll_count = 0
+            return
         if self._hv_poll_unsub is not None:
             self._hv_poll_unsub()
             self._hv_poll_unsub = None
@@ -841,7 +874,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     async def async_probe(self, force: bool = False) -> None:
         await self.hass.async_add_executor_job(self._probe, force)
-        # se la lettura ha trovato l'HV acceso, segui la finestra di freschezza (auto-loop)
+        # se la lettura ha trovato l'HV acceso, segui la finestra di freschezza (auto-loop).
+        # P0-4: se nel frattempo è arrivato lo stop, NON ri-armare (questa probe era già in volo).
+        if self._closing:
+            return
         self._arm_hv_followup()
 
     def _probe(self, force: bool = False) -> None:

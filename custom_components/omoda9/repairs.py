@@ -7,6 +7,8 @@ login → correggerlo è pura scrittura in entry.data + reload: il reload azzera
 l'anti-lockout module-level (`commands.reset_pin_lockout` in `_bind_core`)."""
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
 
 import voluptuous as vol
@@ -16,6 +18,25 @@ from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_PIN
+
+_CORE = os.path.join(os.path.dirname(__file__), "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
+
+def _clear_pin_lockout() -> None:
+    """P0-2: azzera INCONDIZIONATAMENTE anti-lockout + taskId in cache (in executor).
+
+    `_bind_core` azzera solo se il PIN è CAMBIATO: se l'utente riconferma lo STESSO PIN
+    (perché il blocco non era colpa del PIN, o per ritentare) il contatore resterebbe su
+    e i comandi continuerebbero a fallire fino allo scadere della finestra. Qui l'utente ha
+    fatto un gesto esplicito di rimedio → si riparte sempre puliti."""
+    import commands  # noqa: PLC0415 — modulo core/, import lazy fuori dal loop
+
+    if hasattr(commands, "reset_pin_lockout"):
+        commands.reset_pin_lockout()
+    if hasattr(commands, "invalidate_taskid"):
+        commands.invalidate_taskid()
 
 
 async def async_create_fix_flow(
@@ -60,6 +81,8 @@ class Omoda9PinRepairFlow(RepairsFlow):
                     entry, data={**entry.data, CONF_PIN: new_pin}
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
+                # P0-2: reset incondizionato, anche se il PIN reinserito è identico.
+                await self.hass.async_add_executor_job(_clear_pin_lockout)
                 return self.async_create_entry(title="", data={})
         schema = vol.Schema(
             {vol.Required(CONF_PIN, default=entry.data.get(CONF_PIN, "")): str}

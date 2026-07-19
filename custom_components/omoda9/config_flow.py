@@ -40,6 +40,17 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 
+def _clear_pin_lockout() -> None:
+    """P0-2: azzera anti-lockout PIN + taskId in cache (module-level in `core/commands`).
+    Da chiamare in executor a ogni riconfigurazione del PIN, anche se invariato."""
+    import commands  # noqa: PLC0415 — modulo core/, import lazy fuori dal loop
+
+    if hasattr(commands, "reset_pin_lockout"):
+        commands.reset_pin_lockout()
+    if hasattr(commands, "invalidate_taskid"):
+        commands.invalidate_taskid()
+
+
 def _pending_token_path(hass: HomeAssistant) -> str:
     """Path temporaneo dove conia il token finché non si conosce il VIN."""
     return hass.config.path(f"{DOMAIN}_pending_token.json")
@@ -267,6 +278,9 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # (commands.reset_pin_lockout in _bind_core quando rileva il PIN cambiato).
                 from homeassistant.helpers import issue_registry as ir
                 ir.async_delete_issue(self.hass, DOMAIN, f"pin_wrong_{entry.entry_id}")
+                # P0-2: reset INCONDIZIONATO prima del reload. `_bind_core` azzera solo
+                # se il PIN è cambiato → reinserire lo STESSO PIN lasciava il blocco attivo.
+                await self.hass.async_add_executor_job(_clear_pin_lockout)
                 return self.async_update_reload_and_abort(
                     entry, data={**entry.data, CONF_PIN: new_pin})
         schema = vol.Schema({
