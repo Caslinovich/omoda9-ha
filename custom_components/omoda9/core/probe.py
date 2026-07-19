@@ -35,14 +35,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 from . import wake as W
 from . import codes
 
-VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
+# P2-6: il VIN arriva dal `CoreCtx` del veicolo, non più da un global di modulo.
 # PRIVACY: il record grezzo contiene VIN e coordinate GPS → log OPT-IN, spento di default.
 # Si attiva solo valorizzando OMODA_PROBE_LOG col path del file da scrivere.
 PROBE_LOG  = os.environ.get("OMODA_PROBE_LOG", "")
 COOLDOWN_S = int(os.environ.get("PROBE_COOLDOWN", "120"))   # [2.0] 2 min: il realtime è read-only e l'auto resta online a lungo → letture opportunistiche frequenti (era 1800=30min, troppo restrittivo). I poll usano force=True e lo bypassano comunque.
 
-_BUSY = threading.Lock()
-_last_run = {"ts": 0.0}
 
 # campi "ricchi" del CVRealtimeResBean che ci interessano di più (se mai arrivano)
 RICH_KEYS = ("lat", "lon", "altitude", "direction", "gpsSpeed", "vehicleSpeed",
@@ -70,34 +68,40 @@ def _rich(data: dict) -> dict:
     return {k: data[k] for k in RICH_KEYS if k in data}
 
 
-def probe_once(publish, force=False, on_data=None):
+def probe_once(ctx, publish, force=False, on_data=None):
     """Esegue UNA sonda di sola lettura e riporta l'esito via `publish(text)`.
+
+    `ctx` = CoreCtx del veicolo: VIN, host, token e cooldown della sonda. Prima erano
+    global di modulo, quindi con due auto configurate la sonda dell'una consumava il
+    cooldown dell'altra — e leggeva comunque il VIN dell'ultimo entry avviato.
 
     Ritorna un dict {ok, online, got_data, codes, rich}. Mai solleva.
     `force=True` ignora il cooldown (per il test manuale).
     `on_data(data)` (opzionale): callback invocata col dict `data` grezzo SOLO quando
     si ricevono dati live (auto sveglia) — il ponte la usa per pubblicare GPS/batteria in HA.
     """
-    if not _BUSY.acquire(blocking=False):
+    if not ctx.stato.lock_sonda.acquire(blocking=False):
         return {"ok": False, "reason": "busy"}
     try:
         now = time.time()
-        if not force and _last_run["ts"] and (now - _last_run["ts"]) < COOLDOWN_S:
+        ultima = ctx.stato.ultima_sonda_ts
+        if not force and ultima and (now - ultima) < COOLDOWN_S:
             return {"ok": False, "reason": "cooldown",
-                    "wait_s": int(COOLDOWN_S - (now - _last_run["ts"]))}
-        _last_run["ts"] = now
+                    "wait_s": int(COOLDOWN_S - (now - ultima))}
+        ctx.stato.ultima_sonda_ts = now
 
         publish("🛰️ Sonda posizione: l'auto è sveglia, provo a leggere GPS/realtime…")
-        ut, tu = W._bff_login()
+        ut, tu = W._bff_login(ctx)
         if not ut:
             publish("🔑 Sonda: sessione scaduta (rifai login OTP). Riprovo al prossimo risveglio")
             _log({"event": "probe", "ok": False, "reason": "no_usertoken"})
             return {"ok": False, "reason": "no_usertoken"}
 
-        sc1, j1 = W._signed_post(ut, "/asr/manager/realtime", {"vin": VIN})
-        sc2, j2 = W._signed_post(ut, "/asc/vehicleControl/queryVehicleLocation", {"vin": VIN})
+        sc1, j1 = W._signed_post(ctx, ut, "/asr/manager/realtime", {"vin": ctx.vin})
+        sc2, j2 = W._signed_post(ctx, ut, "/asc/vehicleControl/queryVehicleLocation",
+                                 {"vin": ctx.vin})
         # travelQuery: cerchiamo km/odometro (campo non ancora visto; lo riveleremo al 1° wake reale)
-        sc3, j3 = W._signed_post(ut, "/asd/travelManage/travelQuery", {"vin": VIN})
+        sc3, j3 = W._signed_post(ctx, ut, "/asd/travelManage/travelQuery", {"vin": ctx.vin})
         c1, c2, c3 = W._code_of(j1), W._code_of(j2), W._code_of(j3)
         got1, got2, got3 = W._has_live_data(j1), W._has_live_data(j2), W._has_live_data(j3)
 
@@ -139,32 +143,33 @@ def probe_once(publish, force=False, on_data=None):
         publish(f"⚠️ Sonda errore: {type(e).__name__}: {e}")
         return {"ok": False, "reason": "exception", "error": str(e)}
     finally:
-        _BUSY.release()
+        ctx.stato.lock_sonda.release()
 
 
 # ───────────────────────── self-test (NESSUNA rete) ─────────────────────────────
 if __name__ == "__main__":
-    pub = lambda t: print("  STATUS:", t)
+    from .context import CoreCtx
 
-    print("== TEST 1: dati realtime ricevuti (mock) → SVOLTA ==")
-    W._bff_login = lambda: ("FAKE_UT", "1")
-    W._signed_post = lambda ut, path, params: (200, {"code": "000000", "data": {
+    def pub(t):
+        print("  STATUS:", t)
+
+    print("== TEST 1: dati realtime ricevuti (mock) -> SVOLTA ==")
+    W._bff_login = lambda c, _allow_refresh=True: ("FAKE_UT", "1")
+    W._signed_post = lambda c, ut, path, params: (200, {"code": "000000", "data": {
         "lat": "45.07", "lon": "7.68", "dumpEnergy": "82", "vehicleSpeed": "0",
         "onlineStatus": "1"}}) if "realtime" in path else (200, {"code": "A07900"})
-    _last_run["ts"] = 0.0
-    print("  ->", probe_once(pub, force=True))
+    print("  ->", probe_once(CoreCtx(vin="TEST"), pub, force=True))
 
     print("== TEST 2: ancora A07900 ad auto sveglia (mock) ==")
-    W._signed_post = lambda ut, path, params: (200, {"code": "A07900"})
-    _last_run["ts"] = 0.0
-    print("  ->", probe_once(pub, force=True))
+    W._signed_post = lambda c, ut, path, params: (200, {"code": "A07900"})
+    print("  ->", probe_once(CoreCtx(vin="TEST"), pub, force=True))
 
     print("== TEST 3: cooldown attivo ==")
-    _last_run["ts"] = time.time()
-    print("  ->", probe_once(pub))
+    ctx = CoreCtx(vin="TEST")
+    ctx.stato.ultima_sonda_ts = time.time()
+    print("  ->", probe_once(ctx, pub))
 
     print("== TEST 4: token scaduto ==")
-    W._bff_login = lambda: (None, None)
-    _last_run["ts"] = 0.0
-    print("  ->", probe_once(pub, force=True))
+    W._bff_login = lambda c, _allow_refresh=True: (None, None)
+    print("  ->", probe_once(CoreCtx(vin="TEST"), pub, force=True))
     print("\nOK self-test concluso (nessuna chiamata di rete reale).")

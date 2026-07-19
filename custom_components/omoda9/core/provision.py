@@ -53,6 +53,21 @@ from . import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
 PIN        = os.environ.get("PIN", os.environ.get("OMODA_PIN", ""))   # PIN di controllo (PER-ACCOUNT)
+
+# P2-6: questo modulo è uno STRUMENTO DI DIAGNOSTICA da riga di comando — il componente
+# non lo importa mai (il provisioning dei certificati in Home Assistant passa da
+# `cert_bundle.py`). Non avendo un config entry da cui partire, si costruisce il contesto
+# da `os.environ`, che qui resta il canale naturale.
+from .context import ctx_da_environ
+
+def _ctx():
+    """Contesto per le chiamate a wake/*: ricostruito a ogni uso dall'ambiente."""
+    ctx = ctx_da_environ()
+    if not ctx.vin:
+        ctx.vin = VIN
+    if not ctx.pin:
+        ctx.pin = PIN
+    return ctx
 # PRIVACY: i record contengono VIN/identificativi account → log OPT-IN, spento di default.
 # Si attiva solo valorizzando OMODA_PROV_LOG col path del file da scrivere.
 PROV_LOG   = os.environ.get("OMODA_PROV_LOG", "")
@@ -98,12 +113,12 @@ def _bff_call(path: str, params: dict = None, method: str = "POST"):
 
     È lo schema PROVATO (stage2_tsp.py / checkpw_oneshot.py): le route vmc/cpm/auth
     del BFF accettano l'access_token come Bearer. Ritorna (status_code, json)."""
-    access = W._access_token()
+    access = W._access_token(_ctx())
     extra = {"Authorization": f"Bearer {access}",
              "Content-Type": "application/json; charset=UTF-8",
              "Accept": "application/json, text/plain, */*"}
-    H = A.headers_post(path, extra=extra)
-    url = A.BFF + path
+    H = A.headers_post(path, extra=extra, ctx=_ctx())
+    url = _ctx().bff + path
     if method.upper() == "GET":
         r = requests.get(url, params=params or {}, headers=H, timeout=25)
     else:
@@ -164,7 +179,7 @@ def send_command(cmd: str, car_token: str, vin: str = None, tuser_id: str = None
     if extra_body:
         body.update(extra_body)
     path = cmd if cmd.startswith("/") else f"/asc/vehicleControl/{cmd}"
-    return W._signed_post(car_token, path, body)
+    return W._signed_post(_ctx(), car_token, path, body)
 
 
 # ───────────────────────── estrazione veicolo dalla risposta queryList ──────────
@@ -237,7 +252,7 @@ def diagnose(publish):
     Ritorna un dict riepilogativo. Mai solleva."""
     try:
         publish("🔎 Diagnostica veicolo (sola lettura, non tocca l'auto)…")
-        ut, tu = W._bff_login()
+        ut, tu = W._bff_login(_ctx())
         if not ut:
             publish("🔑 Sessione scaduta: rifai il login OTP (token.json).")
             return {"ok": False, "reason": "no_usertoken"}
@@ -298,7 +313,7 @@ def run_command(publish, cmd: str = "remoteStart", pin: str = None,
             publish("⌛ Auto a riposo: il comando darebbe A07900. Sveglia prima (uso reale).")
             return {"ok": False, "reason": "asleep"}
 
-        ut, tu = W._bff_login()
+        ut, tu = W._bff_login(_ctx())
         if not ut:
             publish("🔑 Sessione scaduta: rifai il login OTP.")
             return {"ok": False, "reason": "no_usertoken"}
@@ -389,7 +404,7 @@ if __name__ == "__main__":
     # NB: i mock vanno assegnati ai global di QUESTO modulo (__main__), che è ciò
     # che diagnose()/run_command() risolvono a runtime — non a un secondo `import`.
     print("== TEST diagnose (mock, ipotesi B) ==")
-    W._bff_login = lambda: ("FAKE_UT", "FAKE_TUSERID")
+    W._bff_login = lambda c, _allow_refresh=True: ("FAKE_UT", "FAKE_TUSERID")
     get_tuser_id = lambda user_id=None: (200, {"code": "000000", "data": "FAKE_TUSERID"})
     query_list   = lambda: (200, mock_q)
     print("  ->", diagnose(pub))

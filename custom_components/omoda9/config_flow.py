@@ -44,15 +44,18 @@ _LOGGER = logging.getLogger(__name__)
 _CORE = os.path.join(os.path.dirname(__file__), "core")
 
 
-def _clear_pin_lockout() -> None:
-    """P0-2: azzera anti-lockout PIN + taskId in cache (module-level in `core/commands`).
-    Da chiamare in executor a ogni riconfigurazione del PIN, anche se invariato."""
-    from .core import commands  # noqa: PLC0415 — import lazy: gira in executor
+def _clear_pin_lockout(hass: HomeAssistant, entry_id: str) -> None:
+    """P0-2: azzera anti-lockout PIN + taskId in cache del veicolo interessato.
 
-    if hasattr(commands, "reset_pin_lockout"):
-        commands.reset_pin_lockout()
-    if hasattr(commands, "invalidate_taskid"):
-        commands.invalidate_taskid()
+    Da chiamare a ogni riconfigurazione del PIN, ANCHE se invariato: il blocco vive in
+    memoria e un reload non lo azzera, quindi reinserire lo stesso PIN (caso reale,
+    quando il blocco non era colpa del PIN) lascerebbe l'utente fermo senza segnale.
+
+    P2-6: lo stato è per-veicolo, quindi si agisce sul contesto di QUEL coordinator e
+    non più su un global condiviso da tutte le auto configurate."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+    if coordinator is not None:
+        coordinator.ctx.reset_pin_lockout()
 
 
 def _pending_token_path(hass: HomeAssistant) -> str:
@@ -68,54 +71,64 @@ def _reason_line(detail: str | None) -> str:
     return f"\n\n⚠️ Motivo: {detail}" if detail else ""
 
 
-def _prepare_env(hass: HomeAssistant, data: dict, token_path: str | None = None) -> None:
-    """Imposta l'ambiente per i moduli core/ (letti a import-time) dai dati del flow."""
-    os.environ["OMODA_EMAIL"] = data.get(CONF_EMAIL, "")
-    os.environ["OMODA_PIN"] = data.get(CONF_PIN, "")
-    os.environ["VIN"] = data.get(CONF_VIN, "")
-    os.environ["TUSERID"] = data.get(CONF_TUSERID, "")
-    os.environ["CHANNEL_ID"] = str(data.get(CONF_CHANNEL_ID, DEFAULTS[CONF_CHANNEL_ID]))
-    os.environ["OMODA_BFF"] = data.get(CONF_BFF, DEFAULTS[CONF_BFF])
-    os.environ["TSP_HOST"] = data.get(CONF_TSP_HOST, DEFAULTS[CONF_TSP_HOST])
-    os.environ["OMODA_TOKEN_PATH"] = token_path or _pending_token_path(hass)
-    os.environ["OMODA_SRC_DIR"] = _CORE
+def _ctx_del_flow(hass: HomeAssistant, data: dict, token_path: str | None = None):
+    """`CoreCtx` per i passi del config flow, costruito dai dati inseriti nel form.
+
+    P2-6: prima questa funzione scriveva otto variabili in `os.environ` — PIN ed email
+    compresi — che restavano nell'ambiente del processo Home Assistant. Ora la
+    configurazione del tentativo in corso è un oggetto locale alla chiamata: due utenti
+    che configurano due auto non si calpestano più, e nessun segreto resta in giro.
+
+    Durante il flow il VIN non è ancora noto, quindi il token si conia in un percorso
+    "pending" e viene spostato al suo posto definitivo solo a veicolo scelto."""
+    from .core.context import CoreCtx
+
+    return CoreCtx(
+        vin=data.get(CONF_VIN, ""),
+        tuserid=data.get(CONF_TUSERID, ""),
+        pin=data.get(CONF_PIN, ""),
+        email=data.get(CONF_EMAIL, ""),
+        token_path=token_path or _pending_token_path(hass),
+        src_dir=_CORE,
+        tsp_host=data.get(CONF_TSP_HOST, DEFAULTS[CONF_TSP_HOST]),
+        bff=data.get(CONF_BFF, DEFAULTS[CONF_BFF]),
+        channel_id=str(data.get(CONF_CHANNEL_ID, DEFAULTS[CONF_CHANNEL_ID])),
+    )
 
 
 def _send_otp(hass: HomeAssistant, data: dict) -> tuple[bool, str]:
     """Risolve il captcha e invia l'OTP all'email (executor) → core.session.request_otp."""
-    _prepare_env(hass, data)
     from .core import session as SESSION
     msgs: list[str] = []
-    ok = SESSION.request_otp(emit=msgs.append)
+    ok = SESSION.request_otp(_ctx_del_flow(hass, data), emit=msgs.append)
     return ok, (msgs[-1] if msgs else "")
 
 
 def _mint_token(hass: HomeAssistant, data: dict, code: str) -> tuple[bool, str]:
     """Conia il token dal codice OTP (executor) → core.session.confirm_otp (salva nel pending)."""
-    _prepare_env(hass, data)
     from .core import session as SESSION
-    return SESSION.confirm_otp(code)
+    return SESSION.confirm_otp(_ctx_del_flow(hass, data), code)
 
 
 def _discover(hass: HomeAssistant, data: dict) -> tuple[bool, str, list[str], str]:
     """Dopo l'OTP: scopre (tUserId, [VIN]) dal token appena coniato. Sola lettura.
 
     Ritorna (ok, tuserid, vins, dettaglio)."""
-    _prepare_env(hass, data)
     try:
         import requests
         from .core import omoda_auth as A
         from .core import wake
-        wake.TOKEN_PATH = _pending_token_path(hass)   # token appena coniato
-        _ut, tu = wake._bff_login()
+        # il token è quello appena coniato, ancora nel percorso "pending"
+        ctx = _ctx_del_flow(hass, data, token_path=_pending_token_path(hass))
+        _ut, tu = wake._bff_login(ctx)
         if not tu:
             return False, "", [], "login backend non riuscito"
-        access = wake._access_token()
-        headers = A.headers_post("/tsp/v1/app/vmc/queryList", extra={
+        access = wake._access_token(ctx)
+        headers = A.headers_post("/tsp/v1/app/vmc/queryList", ctx=ctx, extra={
             "Authorization": f"Bearer {access}",
             "Content-Type": "application/json; charset=UTF-8",
             "Accept": "application/json, text/plain, */*"})
-        r = requests.post(A.BFF + "/tsp/v1/app/vmc/queryList",
+        r = requests.post(ctx.bff + "/tsp/v1/app/vmc/queryList",
                           data=json.dumps({}), headers=headers, timeout=25)
         j = r.json()
         lst = j.get("data")
@@ -284,7 +297,7 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ir.async_delete_issue(self.hass, DOMAIN, f"pin_wrong_{entry.entry_id}")
                 # P0-2: reset INCONDIZIONATO prima del reload. `_bind_core` azzera solo
                 # se il PIN è cambiato → reinserire lo STESSO PIN lasciava il blocco attivo.
-                await self.hass.async_add_executor_job(_clear_pin_lockout)
+                _clear_pin_lockout(self.hass, entry.entry_id)
                 return self.async_update_reload_and_abort(
                     entry, data={**entry.data, CONF_PIN: new_pin})
         # P1-5: campo PASSWORD e NESSUN default col PIN attuale. Prima il PIN comandi

@@ -32,11 +32,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # P2-2: import relativo di pacchetto (prima: nome nudo + `sys.path.insert(HERE)`).
 from . import wake  # riusa _bff_login / _refresh_token / TOKEN_PATH
 
-EMAIL     = os.environ.get("OMODA_EMAIL", "")   # PER-ACCOUNT: vedi omoda9.env.example
-# Cartella con login_omoda.py / prova_token.py / omoda.py: di default sono in questa stessa
-# cartella (pacchetto). Override con OMODA_SRC_DIR se vivono altrove.
-OMODA_DIR = os.environ.get("OMODA_SRC_DIR", HERE)
-PYEXE     = sys.executable  # il venv del ponte (ha captcha/sm4/requests)
+# P2-6: email e cartella sorgenti arrivano dal `CoreCtx` del veicolo, non più da global
+# di modulo popolati da os.environ.
+PYEXE     = sys.executable  # il python di Home Assistant (ha le requirements del manifest)
 _TIMEOUT  = int(os.environ.get("OMODA_OTP_TIMEOUT", "120"))
 
 
@@ -47,7 +45,7 @@ STATUS_EXPIRED = "EXPIRED"      # token/sessione morti → serve un OTP nuovo (r
 STATUS_NET_ERROR = "NET_ERROR"  # errore di rete/transitorio → NON è una sessione scaduta
 
 
-def check():
+def check(ctx):
     """Ritorna (ok: bool, dettaglio: str, status: str).
 
     `status` è il marcatore stabile (STATUS_OK/EXPIRED/NET_ERROR): è ciò su cui il
@@ -55,7 +53,7 @@ def check():
     Distinguere EXPIRED da NET_ERROR è essenziale: un blip di rete NON deve far comparire
     la card «Riautentica» (l'utente rifarebbe un OTP inutile)."""
     try:
-        ut, tu = wake._bff_login()
+        ut, tu = wake._bff_login(ctx)
     except Exception as e:
         return False, f"errore rete: {type(e).__name__}", STATUS_NET_ERROR
     if ut:
@@ -65,47 +63,58 @@ def check():
             STATUS_EXPIRED)
 
 
-def refresh():
+def refresh(ctx):
     """Rinnova l'access_token col refresh_token (senza OTP). True se rinnovato."""
     try:
-        return bool(wake._refresh_token())
+        return bool(wake._refresh_token(ctx))
     except Exception:
         return False
 
 
-def _call_env():
-    """Legge gli input dell'ATTUALE tentativo da os.environ al momento della CHIAMATA, non
-    all'import (stesso schema di wake._token_path). Il config flow scrive OMODA_EMAIL/OMODA_SRC_DIR
-    in os.environ prima di ogni tentativo, ma questo modulo resta in cache in sys.modules: le
-    costanti EMAIL/OMODA_DIR resterebbero congelate su ciò che ha visto il PRIMO tentativo → una
-    mail sbagliata (o il passaggio a un altro account) continuava a fallire fino al riavvio di HA."""
-    email = os.environ.get("OMODA_EMAIL", EMAIL)
-    src_dir = os.environ.get("OMODA_SRC_DIR", OMODA_DIR)
+def _timeout() -> int:
     try:
-        timeout = int(os.environ.get("OMODA_OTP_TIMEOUT", str(_TIMEOUT)))
+        return int(os.environ.get("OMODA_OTP_TIMEOUT", str(_TIMEOUT)))
     except (TypeError, ValueError):
-        timeout = _TIMEOUT
-    return email, src_dir, timeout
+        return _TIMEOUT
 
 
-def _subenv(**extra):
-    """P1-4: ambiente EFFIMERO per il sottoprocesso. Email e OTP viaggiano qui e NON in argv:
-    la riga di comando è leggibile da qualsiasi utente della macchina (`ps aux`, /proc/<pid>/cmdline),
-    l'environment di un processo no. La copia è locale alla chiamata → non sporca os.environ."""
+def _subenv(ctx, **extra):
+    """Ambiente EFFIMERO per il sottoprocesso di login.
+
+    P1-4: email e OTP viaggiano QUI e non in argv — la riga di comando è leggibile da
+    qualsiasi utente della macchina (`ps aux`, `/proc/<pid>/cmdline`), l'environment di un
+    processo no. La copia è locale alla chiamata: `os.environ` del processo Home Assistant
+    non viene toccato.
+
+    P2-6: è l'unico punto in cui l'ambiente resta un canale legittimo. `login_omoda.py` e
+    `prova_token.py` sono PROCESSI SEPARATI: non possono ricevere un oggetto Python, e
+    passare le stesse informazioni in argv le renderebbe visibili a tutta la macchina.
+    Perciò la configurazione del contesto viene serializzata qui, per quella sola chiamata."""
     env = dict(os.environ)
+    env.update({
+        "OMODA_EMAIL": ctx.email,
+        "OMODA_TOKEN_PATH": ctx.token_path,
+        "OMODA_BFF": ctx.bff,
+        "TSP_HOST": ctx.tsp_host,
+        "CHANNEL_ID": ctx.channel_id,
+        "OMODA_COUNTRY_ID": ctx.country_id,
+        "OMODA_TENANT_CODE": ctx.tenant_code,
+        "VIN": ctx.vin,
+        "TUSERID": ctx.tuserid,
+    })
     env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env
 
 
-def request_otp(emit=lambda m: None):
+def request_otp(ctx, emit=lambda m: None):
     """Invia il codice OTP alla mail dell'utente. True se l'invio è andato a buon fine."""
-    email, src_dir, timeout = _call_env()
+    email, src_dir, timeout = ctx.email, ctx.src_dir, _timeout()
     emit("invio codice OTP alla mail…")
     try:
         # email via env (P1-4), non in argv: login_omoda.py la rilegge da OMODA_EMAIL.
         r = subprocess.run([PYEXE, "login_omoda.py", "invia"],
                            cwd=src_dir, capture_output=True, text=True, timeout=timeout,
-                           env=_subenv(OMODA_EMAIL=email))
+                           env=_subenv(ctx))
     except subprocess.TimeoutExpired:
         emit("timeout invio OTP — riprova")
         return False
@@ -119,29 +128,30 @@ def request_otp(emit=lambda m: None):
     return False
 
 
-def confirm_otp(code, emit=lambda m: None):
+def confirm_otp(ctx, code, emit=lambda m: None):
     """Conia il token col codice OTP. Ritorna (ok, dettaglio)."""
     code = (code or "").strip()
     if not code:
         return False, "nessun codice inserito"
-    email, src_dir, timeout = _call_env()
+    src_dir, timeout = ctx.src_dir, _timeout()
     emit("conio il token col codice…")
     try:
         # email E codice OTP via env (P1-4), non in argv: il codice è una credenziale usa-e-getta
         # ma resterebbe comunque visibile in `ps` per tutta la durata della chiamata.
         r = subprocess.run([PYEXE, "prova_token.py"],
                            cwd=src_dir, capture_output=True, text=True, timeout=timeout,
-                           env=_subenv(OMODA_EMAIL=email, OMODA_OTP=code))
+                           env=_subenv(ctx, OMODA_OTP=code))
     except subprocess.TimeoutExpired:
         return False, "timeout conio token"
     out = (r.stdout or "") + (r.stderr or "")
     # H7: esito su returncode + sentinella stabile, non su sottostringhe localizzate
     if r.returncode == 0 and "RESULT: OK" in out:
-        ok, _detail, _status = check()
+        ok, _detail, _status = check(ctx)
         return ok, ("Sessione ripristinata ✅" if ok else "token coniato ma login ancora KO")
     tail = out.strip().splitlines()[-1] if out.strip() else f"rc={r.returncode}"
     return False, f"codice rifiutato: {tail[:120]}"
 
 
 if __name__ == "__main__":
-    print("check:", check())
+    from .context import ctx_da_environ
+    print("check:", check(ctx_da_environ()))

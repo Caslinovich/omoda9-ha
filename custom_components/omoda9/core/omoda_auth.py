@@ -22,13 +22,19 @@ Uso strettamente personale (auto/account di Rino).
 import os, time, hashlib, base64, json
 
 # ── Costanti (da .env.prod + decompilato) ────────────────────────────────────
-# Endpoint/parametri di REGIONE: default = Europa, override via env.
-BFF          = os.environ.get("OMODA_BFF", "https://legend-oj.omodaauto.nl/api")
+# P2-6: i parametri di REGIONE (BFF/channel/country/tenant) NON sono più global di
+# modulo riscritti a ogni chiamata: arrivano dal `CoreCtx` del veicolo. Restano qui
+# solo le costanti dell'APP — identiche per ogni utente, estraibili dall'APK, non
+# sono dati per-account.
 APP_BASIC    = "Basic bGVnZW5kQXBwOmxlZ2VuZEFwcA=="   # AUTHENTICATION_SECRET_KEY (costante app)
+APP_VERSION  = "1.1.9"
+
+# Default di regione, usati solo quando `headers_post` è chiamata senza contesto
+# (diagnostica da riga di comando). In Home Assistant il contesto c'è sempre.
+BFF          = os.environ.get("OMODA_BFF", "https://legend-oj.omodaauto.nl/api")
 TENANT_CODE  = os.environ.get("OMODA_TENANT_CODE", "300006")
 CHANNEL_ID   = os.environ.get("CHANNEL_ID", "1")
 COUNTRY_ID   = os.environ.get("OMODA_COUNTRY_ID", "1")
-APP_VERSION  = "1.1.9"
 
 SIGN_NONCE   = "chery_legend_h5"                       # headerSignature nonce
 SIGN_SECRET  = "cX5fR8lJ6pK2xD4uH1eK4pY6wA4xO0sK"     # prod (ENV=0)
@@ -113,7 +119,16 @@ def sign_post(url_path: str, ts_ms: int=None, secret: str=SIGN_SECRET, nonce: st
 
 DEPT_ID = "39"   # CountryArea.value() per Italia (mappa paese->prefisso, da area_config.dart). Francia=33, Germania=49...
 
-def headers_post(url_path: str, secret: str=SIGN_SECRET, nonce: str=SIGN_NONCE, dept_id: str=DEPT_ID, extra=None):
+def headers_post(url_path: str, secret: str=SIGN_SECRET, nonce: str=SIGN_NONCE,
+                 dept_id: str=DEPT_ID, extra=None, ctx=None):
+    """Header firmati per una POST. `ctx` (CoreCtx) fornisce i parametri di regione.
+
+    P2-6: senza contesto si ripiega sui default di modulo — serve solo alla diagnostica
+    da riga di comando. Home Assistant passa sempre il contesto del veicolo, così due
+    entry con regioni diverse non si calpestano più a vicenda."""
+    channel_id = ctx.channel_id if ctx is not None else CHANNEL_ID
+    country_id = ctx.country_id if ctx is not None else COUNTRY_ID
+    tenant = ctx.tenant_code if ctx is not None else TENANT_CODE
     sig, ts = sign_post(url_path, secret=secret, nonce=nonce)
     # Set header COMPLETO come l'app (http_config.dart headersJson + headerSignature).
     # Content-Type/Authorization sono override dell'extraHeaderParams del builder token.
@@ -126,12 +141,12 @@ def headers_post(url_path: str, secret: str=SIGN_SECRET, nonce: str=SIGN_NONCE, 
         "version": APP_VERSION,
         "Authorization": APP_BASIC,
         "DEPT-ID": dept_id,
-        "TENANT-ID": TENANT_CODE,
-        "TENANT-CODE": TENANT_CODE,
+        "TENANT-ID": tenant,
+        "TENANT-CODE": tenant,
         "CLIENT-TOC": "Y",
         # varianti lowercase che mandavamo prima (innocue, alcune route le leggono)
-        "tenantCode": TENANT_CODE, "tenantID": TENANT_CODE,
-        "channelId": CHANNEL_ID, "countryId": COUNTRY_ID,
+        "tenantCode": tenant, "tenantID": tenant,
+        "channelId": channel_id, "countryId": country_id,
         "appversion": APP_VERSION,
         "User-Agent": "okhttp/4.9.0",
         # firma

@@ -40,12 +40,11 @@ from .pin_lockout import PinLockout, PinLockedError
 # H8: rimosso `importlib.reload(tsp_sign)` a import-time (side-effect inutile; tsp_sign
 # non viene mutato altrove e ricaricarlo all'import poteva azzerare eventuali monkeypatch).
 
-# Dati PER-ACCOUNT: nessun default — forniti via omoda9.env (vedi omoda9.env.example).
-VIN        = os.environ.get("VIN", "")
-PIN        = os.environ.get("OMODA_PIN", "")
-TSP_HOST   = os.environ.get("TSP_HOST", "https://tspconsole-eu.cheryinternational.com")   # regione (default EU)
-TASKID_FILE = os.environ.get("OMODA_TASKID_FILE", os.path.join(HERE, "data", "taskid.txt"))
-MINT_TASKID = os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false", "no")
+# P2-6: VIN, PIN, host, file del taskId e conio automatico NON sono più global di modulo
+# riscritti prima di ogni chiamata: arrivano dal `CoreCtx` del veicolo, primo argomento di
+# ogni funzione pubblica. Era la radice comune di sei bug: con due auto configurate il
+# secondo entry sovrascriveva la configurazione del primo e un comando poteva partire
+# verso l'auto sbagliata.
 
 # ───────────────────────── Catalogo comandi ─────────────────────────
 # Ogni voce: key -> {endpoint, body(fissi specifici), name, icon, group}
@@ -274,14 +273,9 @@ class CommandError(Exception):
 # modo di coniare è `attempt()`, che serializza guardia + POST + aggiornamento del
 # contatore. Prima erano un dizionario e un lock separati, e bastava prendere il lock
 # troppo tardi per riaprire la corsa P0-1.
-_LOCKOUT = PinLockout(
-    max_fail=int(os.environ.get("OMODA_PIN_FAIL_MAX", "2")),
-    window_s=int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600")),
-)
-# Monitor diagnostico (diag.py): callback module-level impostato dal coordinator SOLO a
-# monitor acceso — `core/` non conosce il coordinator e non deve importarlo. A `None`
-# (default) il codice è dormiente e non costa nulla.
-DIAG_HOOK = None
+# P2-6: il contatore vive in `ctx.lockout` — uno per veicolo. Prima era di processo:
+# con due auto configurate gli errori PIN dell'una avrebbero bloccato i comandi dell'altra.
+#
 # Conii SOVRAPPOSTI: contatore d'ingresso tenuto FUORI dal lock dell'anti-lockout,
 # altrimenti vedrebbe sempre 1 (il lock serializza). Se all'ingresso risulta >1, un
 # secondo thread sta aspettando il lock proprio ora: è la corsa P0-1 vista dal vivo.
@@ -293,18 +287,17 @@ _MINT_INFLIGHT_LOCK = threading.Lock()
 # errore che col PIN non c'entra nulla.
 
 
-def reset_pin_lockout() -> None:
-    """Azzera il contatore anti-lockout dei PIN errati.
+def reset_pin_lockout(ctx) -> None:
+    """Azzera il contatore anti-lockout dei PIN errati (e il taskId in cache).
 
-    Lo stato vive nel processo, non nel config entry: un semplice reload dell'entry
-    (es. dopo aver corretto il PIN) NON lo azzera, quindi senza questa chiamata i
-    comandi resterebbero bloccati fino allo scadere della finestra o a un riavvio di
-    HA. Va invocata a ogni riconfigurazione del PIN (config flow / Repair) e dal
-    `_bind_core` del coordinator quando rileva che il PIN è cambiato."""
-    _LOCKOUT.reset()
+    Lo stato vive in memoria, non nel config entry: un semplice reload dell'entry (es.
+    dopo aver corretto il PIN) NON lo azzera, quindi senza questa chiamata i comandi
+    resterebbero bloccati fino allo scadere della finestra o a un riavvio di HA. Va
+    invocata a ogni riconfigurazione del PIN (config flow / Repair)."""
+    ctx.reset_pin_lockout()
 
 
-def _mint_taskid(tuid):
+def _mint_taskid(ctx, tuid):
     """Conia un taskId. A monitor spento è un passacarte diretto a `_mint_taskid_impl`.
 
     A monitor acceso osserva DUE cose che dal log non si vedono: i conii concorrenti
@@ -312,16 +305,16 @@ def _mint_taskid(tuid):
     di checkPassword con il codice GREZZO del backend — l'unico modo per distinguere un
     PIN davvero errato da un rifiuto per permessi/parametri. Il PIN non viene mai
     registrato, in nessuna forma."""
-    if DIAG_HOOK is None:
-        return _mint_taskid_impl(tuid)
+    if ctx.diag_hook is None:
+        return _mint_taskid_impl(ctx, tuid)
     with _MINT_INFLIGHT_LOCK:
         _MINT_INFLIGHT["n"] += 1
         inflight = _MINT_INFLIGHT["n"]
     if inflight > 1:
-        DIAG_HOOK("pin_fail_concurrent", inflight=inflight)
+        ctx.diag("pin_fail_concurrent", inflight=inflight)
     try:
-        tid = _mint_taskid_impl(tuid)
-        DIAG_HOOK("pin_event", outcome="ok", pin_fail_n=_LOCKOUT.tentativi_falliti)
+        tid = _mint_taskid_impl(ctx, tuid)
+        ctx.diag("pin_event", outcome="ok", pin_fail_n=ctx.lockout.tentativi_falliti)
         return tid
     except CommandError as err:
         # "fail" = il backend ha risposto e ha rifiutato; "empty" = PIN non configurato;
@@ -332,23 +325,23 @@ def _mint_taskid(tuid):
         code = getattr(err, "code", None)
         if "checkPassword" in str(err):
             outcome = "fail"
-        elif not (PIN or "").strip():
+        elif not (ctx.pin or "").strip():
             outcome = "empty"
         else:
             outcome = "blocked"
-        DIAG_HOOK("pin_event", outcome=outcome, reason=getattr(err, "reason", None), cp_code=code,
-                  pin_fail_n=_LOCKOUT.tentativi_falliti,
-                  pin_fail_max=_LOCKOUT.max_fail)
+        ctx.diag("pin_event", outcome=outcome, reason=getattr(err, "reason", None), cp_code=code,
+                 pin_fail_n=ctx.lockout.tentativi_falliti,
+                 pin_fail_max=ctx.lockout.max_fail)
         raise
     except Exception as err:  # noqa: BLE001 — il monitor osserva, non altera il flusso
-        DIAG_HOOK("pin_event", outcome="error", err_type=type(err).__name__)
+        ctx.diag("pin_event", outcome="error", err_type=type(err).__name__)
         raise
     finally:
         with _MINT_INFLIGHT_LOCK:
             _MINT_INFLIGHT["n"] -= 1
 
 
-def _mint_taskid_impl(tuid):
+def _mint_taskid_impl(ctx, tuid):
     """Conia un taskId con la catena BFF dell'app (queryList→setVecDefault→checkPassword).
        FIX S26 (2026-06-20): scene=0 (NON 2) → il taskId coniato è benedetto da tspconsole
        (airControl A00079). scene=2 dava A00089; scene=1 A00089; scene>=3 A00546. Obiettivo #1 RISOLTO.
@@ -360,7 +353,7 @@ def _mint_taskid_impl(tuid):
        coordinator può instradare il rimedio giusto (riconfig PIN vs riautenticazione)."""
     # PIN mancante: si fallisce PRIMA di entrare nell'anti-lockout. Un PIN non configurato
     # non è un tentativo errato — non deve consumare la soglia né toccare il backend.
-    if not (PIN or "").strip():
+    if not (ctx.pin or "").strip():
         raise CommandError(
             "PIN comandi non configurato — impostalo nelle impostazioni dell'integrazione",
             reason="pin")
@@ -368,8 +361,8 @@ def _mint_taskid_impl(tuid):
     # P2-3: `attempt()` prende il lock, applica la guardia e lo tiene per tutta la chiamata
     # di rete. È l'unico modo di coniare: la corsa P0-1 non è più esprimibile.
     try:
-        with _LOCKOUT.attempt() as tentativo:
-            return _checkpassword(tuid, tentativo)
+        with ctx.lockout.attempt() as tentativo:
+            return _checkpassword(ctx, tuid, tentativo)
     except PinLockedError as bloccato:
         raise CommandError(
             f"PIN comandi bloccato temporaneamente ({bloccato.tentativi} tentativi errati) — "
@@ -377,18 +370,18 @@ def _mint_taskid_impl(tuid):
             reason="pin") from None
 
 
-def _checkpassword(tuid, tentativo):
+def _checkpassword(ctx, tuid, tentativo):
     """Catena BFF vera e propria. Gira col lock dell'anti-lockout già preso; dichiara
     l'esito su `tentativo` SOLO quando è davvero attribuibile al PIN."""
     import requests
-    access = wake._access_token()
+    access = wake._access_token(ctx)
     extra = {"Authorization": f"Bearer {access}",
              "Content-Type": "application/json; charset=UTF-8",
              "Accept": "application/json, text/plain, */*"}
 
     def bff(path, body):
-        H = A.headers_post(path, extra=extra)
-        r = requests.post(A.BFF + path, data=json.dumps(body), headers=H, timeout=25)
+        H = A.headers_post(path, extra=extra, ctx=ctx)
+        r = requests.post(ctx.bff + path, data=json.dumps(body), headers=H, timeout=25)
         try:
             j = r.json()
         except Exception:
@@ -397,11 +390,11 @@ def _checkpassword(tuid, tentativo):
         return j if isinstance(j, dict) else {}
 
     bff("/tsp/v1/app/vmc/queryList", {})
-    bff("/tsp/v1/app/vmc/setVecDefault", {"vin": VIN})
-    plain = hashlib.md5(PIN.encode()).hexdigest()
+    bff("/tsp/v1/app/vmc/setVecDefault", {"vin": ctx.vin})
+    plain = hashlib.md5(ctx.pin.encode()).hexdigest()
     password = A.sm4_code(plain, "padRight32")
     j = bff("/tsp/v1/app/cpm/checkPassword",
-            {"vin": VIN, "tUserId": str(tuid), "channelId": A.CHANNEL_ID,
+            {"vin": ctx.vin, "tUserId": str(tuid), "channelId": ctx.channel_id,
              "password": password, "needDecode": 0, "scene": 0, "type": 0})
     data = j.get("data") if isinstance(j.get("data"), dict) else {}
     tid = data.get("taskId") or j.get("taskId")
@@ -450,42 +443,38 @@ def _messaggio_checkpassword(esito, detail: str) -> str:
 # è la parte LENTA di ogni comando. Il taskId però resta valido per un po' → lo riusiamo e lo
 # riconiamo solo quando l'auto lo rifiuta (TASKID_INVALID) o scade il TTL. Così la maggior parte
 # dei comandi diventa una sola POST firmata invece di PIN + POST.
-_TASKID_TTL = int(os.environ.get("OMODA_TASKID_TTL", "600"))   # riuso fino a ~10 min
-_TASKID_CACHE = {"tid": None, "ts": 0.0}
+# P2-6: la cache vive in `ctx.stato` — il taskId è legato al PIN e al VIN, quindi non è
+# condivisibile fra veicoli (prima lo era, ed era un comando verso l'auto sbagliata).
 
 # Codici con cui l'auto dice "questo taskId non va bene" → si riconia e si riprova una
 # volta. P2-5: derivato dalla tabella unica, non più un elenco parallelo.
 TASKID_INVALID = routing.TASKID_INVALID
 
 
-def invalidate_taskid():
+def invalidate_taskid(ctx):
     """Butta il taskId in cache (l'auto lo ha rifiutato come non valido/scaduto)."""
-    _TASKID_CACHE["tid"] = None
-    _TASKID_CACHE["ts"] = 0.0
+    ctx.invalidate_taskid()
 
 
-def get_taskid(tuid, emit=lambda m: None, force_mint=False):
-    """Sorgente taskId, in ordine: env TASKID → file piggyback → cache → checkPassword coniato.
-    `force_mint=True` salta env/file/cache e ne conia uno nuovo (usato al retry dopo un rifiuto:
+def get_taskid(ctx, tuid, emit=lambda m: None, force_mint=False):
+    """Sorgente taskId, in ordine: file piggyback → cache → checkPassword coniato.
+    `force_mint=True` salta file/cache e ne conia uno nuovo (usato al retry dopo un rifiuto:
     ripescare la stessa sorgente rifiutata darebbe di nuovo lo stesso errore)."""
     if not force_mint:
-        t = os.environ.get("TASKID")
-        if t:
-            return t.strip(), "env"
         try:
-            if os.path.exists(TASKID_FILE):
-                with open(TASKID_FILE) as fh:
+            if os.path.exists(ctx.taskid_file):
+                with open(ctx.taskid_file) as fh:
                     v = fh.read().strip()
                 if v:
                     return v, "file"
         except OSError:
             pass
-        if _TASKID_CACHE["tid"] and (time.time() - _TASKID_CACHE["ts"]) < _TASKID_TTL:
-            return _TASKID_CACHE["tid"], "cache"
-    if MINT_TASKID:
+        if ctx.stato.taskid and (time.time() - ctx.stato.taskid_ts) < ctx.taskid_ttl:
+            return ctx.stato.taskid, "cache"
+    if ctx.mint_taskid:
         emit("conio taskId (checkPassword)…")
         try:
-            tid = _mint_taskid(tuid)
+            tid = _mint_taskid(ctx, tuid)
         except CommandError as e:
             # PIN errato / anti-lockout / sessione: pubblica il dettaglio e PROPAGA (non più
             # inghiottito) → send() lo lascia salire col suo `reason` per il routing del rimedio.
@@ -497,13 +486,13 @@ def get_taskid(tuid, emit=lambda m: None, force_mint=False):
                 "PIN comandi non verificabile — riconfiguralo nelle impostazioni "
                 f"dell'integrazione ({e})", reason="pin") from e
         if tid:
-            _TASKID_CACHE["tid"] = tid
-            _TASKID_CACHE["ts"] = time.time()
+            ctx.stato.taskid = tid
+            ctx.stato.taskid_ts = time.time()
             return tid, "checkPassword"
     return None, "none"
 
 
-def send(cmd_key, emit=lambda m: None, params=None):
+def send(ctx, cmd_key, emit=lambda m: None, params=None):
     """Invia un comando. emit(str) riceve i passaggi (per pubblicarli su HA).
        `params` (opzionale) = override/aggiunte al body del catalogo PRIMA dei campi
        comuni → permette i comandi parametrici (clima: temperature/times; ricarica
@@ -515,7 +504,7 @@ def send(cmd_key, emit=lambda m: None, params=None):
         emit(f"comando sconosciuto: {cmd_key}")
         raise CommandError(f"Comando sconosciuto: {cmd_key}")
 
-    token, tuid = wake._bff_login()
+    token, tuid = wake._bff_login(ctx)
     if not token:
         emit("login fallito (token scaduto? rifare OTP ad app chiusa)")
         raise CommandError(
@@ -524,13 +513,13 @@ def send(cmd_key, emit=lambda m: None, params=None):
 
     # path esplicito (es. antifurto su /act/theftAlarm/setSwitch) oppure il classico
     # /asc/vehicleControl/<endpoint> per i comandi veicolo standard.
-    url = TSP_HOST + (c.get("path") or ("/asc/vehicleControl/" + c["endpoint"]))
+    url = ctx.tsp_host + (c.get("path") or ("/asc/vehicleControl/" + c["endpoint"]))
 
     # Tentativo 1 col taskId riusato (veloce). Se l'auto lo rifiuta come non valido/scaduto,
     # lo si riconia (checkPassword) e si riprova UNA volta sola.
     for attempt in (1, 2):
         # get_taskid propaga CommandError (PIN/anti-lockout/sessione) col suo `reason`.
-        taskid, src = get_taskid(tuid, emit, force_mint=(attempt == 2))
+        taskid, src = get_taskid(ctx, tuid, emit, force_mint=(attempt == 2))
         if not taskid:
             # P1-2 (#30): nessun taskId MA nessuna eccezione = il conio è DISATTIVATO
             # (OMODA_MINT_TASKID=0) e non c'era un taskId né in env né su file. Il PIN non
@@ -546,7 +535,8 @@ def send(cmd_key, emit=lambda m: None, params=None):
         body = dict(c["body"])
         if params:
             body.update(params)    # override parametrico (temperatura/durata/controlType/piano)
-        body.update({"clientType": "1", "seq": f"{VIN}-{ts}", "taskId": taskid, "vin": VIN})
+        body.update({"clientType": "1", "seq": f"{ctx.vin}-{ts}",
+                     "taskId": taskid, "vin": ctx.vin})
         m = tsp_sign.sign_body(body, ts)
         payload = json.dumps(m, separators=(",", ":"), ensure_ascii=False).encode()
         headers = {"Authorization": token, "timestamp": str(ts),
@@ -573,8 +563,8 @@ def send(cmd_key, emit=lambda m: None, params=None):
         # P2-5: la tabella dice se il taskId è da rifare. Al primo giro si riconia e si
         # riprova, così l'utente non vede un falso errore per un taskId semplicemente scaduto.
         esito = routing.classifica(code, routing.CONTESTO_COMANDO)
-        if attempt == 1 and esito.riconia_taskid and MINT_TASKID:
-            invalidate_taskid()
+        if attempt == 1 and esito.riconia_taskid and ctx.mint_taskid:
+            invalidate_taskid(ctx)
             emit("taskId non più valido → lo rinnovo e riprovo…")
             continue
         break
@@ -591,15 +581,16 @@ def send(cmd_key, emit=lambda m: None, params=None):
     return out
 
 
-def query_theft_switch():
+def query_theft_switch(ctx):
     """Legge lo stato dell'antifurto (READ-ONLY, /act/theftAlarm/querySwitch).
        Ritorna 1/0 (int) oppure None se non disponibile. NON usa taskId né attua nulla:
        la risposta mette il valore sotto `body.theftAlarmSwitch`."""
-    token, _tuid = wake._bff_login()
+    token, _tuid = wake._bff_login(ctx)
     if not token:
         return None
     try:
-        _status, j = wake._signed_post(token, "/act/theftAlarm/querySwitch", {"vin": VIN})
+        _status, j = wake._signed_post(ctx, token, "/act/theftAlarm/querySwitch",
+                                       {"vin": ctx.vin})
     except Exception:
         return None
     if isinstance(j, dict):

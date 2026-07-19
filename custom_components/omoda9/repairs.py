@@ -3,8 +3,8 @@ comandi remoti senza smontare l'integrazione.
 
 L'avviso viene creato dal coordinator (`_raise_pin_issue`) quando un comando fallisce
 perché il backend rifiuta il taskId (PIN errato / anti-lockout). Il PIN NON serve al
-login → correggerlo è pura scrittura in entry.data + reload: il reload azzera anche
-l'anti-lockout module-level (`commands.reset_pin_lockout` in `_bind_core`)."""
+login → correggerlo è pura scrittura in entry.data + reload, seguito dall'azzeramento
+esplicito dell'anti-lockout di quel veicolo (vedi `_clear_pin_lockout`)."""
 from __future__ import annotations
 
 from typing import Any
@@ -20,22 +20,22 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .const import CONF_PIN
+from .const import CONF_PIN, DOMAIN
 
 
-def _clear_pin_lockout() -> None:
-    """P0-2: azzera INCONDIZIONATAMENTE anti-lockout + taskId in cache (in executor).
+def _clear_pin_lockout(hass: HomeAssistant, entry_id: str) -> None:
+    """P0-2: azzera INCONDIZIONATAMENTE anti-lockout + taskId in cache del veicolo.
 
-    `_bind_core` azzera solo se il PIN è CAMBIATO: se l'utente riconferma lo STESSO PIN
-    (perché il blocco non era colpa del PIN, o per ritentare) il contatore resterebbe su
-    e i comandi continuerebbero a fallire fino allo scadere della finestra. Qui l'utente ha
-    fatto un gesto esplicito di rimedio → si riparte sempre puliti."""
-    from .core import commands  # noqa: PLC0415 — import lazy: gira in executor
+    Il reset avviene anche se l'utente riconferma lo STESSO PIN: il blocco poteva non
+    essere colpa del PIN, e senza reset i comandi continuerebbero a fallire in silenzio
+    fino allo scadere della finestra. Qui l'utente ha compiuto un gesto esplicito di
+    rimedio → si riparte sempre puliti.
 
-    if hasattr(commands, "reset_pin_lockout"):
-        commands.reset_pin_lockout()
-    if hasattr(commands, "invalidate_taskid"):
-        commands.invalidate_taskid()
+    P2-6: lo stato è per-veicolo (nel `CoreCtx` del coordinator), non più un global
+    condiviso da tutte le auto configurate."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+    if coordinator is not None:
+        coordinator.ctx.reset_pin_lockout()
 
 
 async def async_create_fix_flow(
@@ -81,7 +81,8 @@ class Omoda9PinRepairFlow(RepairsFlow):
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 # P0-2: reset incondizionato, anche se il PIN reinserito è identico.
-                await self.hass.async_add_executor_job(_clear_pin_lockout)
+                # Dopo il reload, così agisce sul coordinator ricreato.
+                _clear_pin_lockout(self.hass, entry.entry_id)
                 return self.async_create_entry(title="", data={})
         # P1-5: campo PASSWORD, nessun default col PIN attuale (credenziale in chiaro nel form).
         schema = vol.Schema(

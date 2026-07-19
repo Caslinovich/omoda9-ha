@@ -153,19 +153,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.vehicle_model = cfg.get(DATA_VEHICLE_MODEL) or None
         self.vehicle_brand = cfg.get(DATA_VEHICLE_BRAND) or None
 
-        # env per i moduli core/ (li importeremo DOPO aver settato l'ambiente).
-        # [H1] Assegnazione DIRETTA (non setdefault): con più entry/reload nello stesso
-        # processo, setdefault terrebbe i valori del PRIMO entry → config stale.
-        os.environ["VIN"] = self.vin
-        os.environ["TUSERID"] = self.tuserid
-        os.environ["CHANNEL_ID"] = self.channel_id
-        os.environ["OMODA_TOKEN_PATH"] = self.token_path
-        os.environ["OMODA_BFF"] = self.bff
-        os.environ["TSP_HOST"] = self.tsp_host
-        if self.pin:
-            os.environ["OMODA_PIN"] = self.pin
-        if self.email:
-            os.environ["OMODA_EMAIL"] = self.email
+        # P2-6: qui la configurazione veniva copiata in `os.environ` perché i moduli
+        # core/ la leggevano da lì. Non più: la trasporta il `CoreCtx` (vedi `_build_ctx`),
+        # passato per argomento. Due conseguenze concrete:
+        #   * PIN ed email NON entrano mai nell'ambiente del processo Home Assistant,
+        #     che è leggibile da qualunque cosa ci giri dentro;
+        #   * con due veicoli configurati il secondo entry non sovrascrive più la
+        #     configurazione del primo (era ambiente di PROCESSO, condiviso da entrambi).
 
         self._car = None  # paho mqtt.Client (importato in _connect_car, executor)
         # P2-4: registro UNICO dei timer (keep-alive, poll, follow-up HV, sonda iniziale,
@@ -213,6 +207,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # — vale soprattutto per `_on_car_message`, che gira a ogni push dell'auto.
         self._diag = None
         self._diag_stop_unsub = None
+        # P2-6: contesto dei moduli core/ (config + stato per-veicolo). Creato pigramente
+        # dalla proprietà `ctx`, una volta sola: contiene l'anti-lockout del PIN e la cache
+        # del taskId, che devono sopravvivere fra un comando e l'altro.
+        self._ctx = None
         self._mqtt_up_ts = 0.0   # istante dell'ultima connect MQTT (uptime nel monitor)
 
     # ───────────────── provisioning certificati mutual-TLS (FASE 3c) ─────────────────
@@ -328,11 +326,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         non riparte al prossimo avvio; su unload la lascia com'è (l'utente ha ancora
         giorni a disposizione e il monitor deve riprendere al reload)."""
         rec, self._diag = self._diag, None
-        try:
-            from .core import commands
-            commands.DIAG_HOOK = None
-        except Exception:  # noqa: BLE001 — core/ potrebbe non essere ancora importato
-            pass
+        # P2-6: l'aggancio del monitor vive nel contesto del veicolo, non più in un
+        # global di modulo condiviso da tutte le auto.
+        if self._ctx is not None:
+            self._ctx.diag_hook = None
         if rec is not None:
             rec.close()
         if disarm:
@@ -505,7 +502,6 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             _LOGGER.debug("[poll] lettura realtime fallita: %s", err)
 
     def _connect_car(self) -> None:
-        self._bind_core()
         # import qui (executor): a livello modulo causa un blocking-call warning nel loop.
         import paho.mqtt.client as mqtt
 
@@ -703,51 +699,61 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.data = {**self.data, **patch}
         self.async_set_updated_data(self.data)
 
-    # ───────────────── bind config → moduli core/ ─────────────────
-    def _bind_core(self) -> None:
-        """Inietta la config di QUESTO entry nei global dei moduli core/.
+    # ───────────────── contesto per i moduli core/ (P2-6) ─────────────────
+    def _build_ctx(self):
+        """Costruisce il `CoreCtx` di QUESTO veicolo dal config entry.
 
-        I moduli core/ leggono VIN/PIN/token-path/TSP da env A IMPORT-TIME: se il
-        config flow li ha già importati (con VIN ignoto), o se un ALTRO entry ha
-        importato per primo, i loro global resterebbero stale nello stesso processo.
-        [H1] Qui li forziamo TUTTI ai valori di QUESTO entry → robusto rispetto
-        all'ordine di import e a entry/reload multipli. Idempotente, in executor."""
-        from .core import wake, commands, probe, session
-        from .core import omoda_auth as A
-        # env per i moduli che lo rileggono a runtime (wake._token_path, omoda.py, …)
-        os.environ["OMODA_TOKEN_PATH"] = self.token_path
-        os.environ["VIN"] = self.vin
-        os.environ["TUSERID"] = self.tuserid
-        os.environ["CHANNEL_ID"] = self.channel_id
-        # global per-account dei moduli core/
-        wake.VIN = self.vin
-        wake.TSP_HOST = self.tsp_host
-        wake.TOKEN_PATH = self.token_path
-        commands.VIN = self.vin
-        # PIN cambiato (es. dopo una riconfig)? Azzera l'anti-lockout PRIMA di riassegnare:
-        # `_PIN_FAIL` è module-level e un reload dell'entry NON lo ricarica → senza questo i
-        # comandi resterebbero bloccati col vecchio conteggio anche col PIN ora corretto.
-        if getattr(commands, "PIN", None) != self.pin and hasattr(commands, "reset_pin_lockout"):
-            commands.reset_pin_lockout()
-            # il taskId in cache è stato coniato col PIN precedente → non riusarlo
-            if hasattr(commands, "invalidate_taskid"):
-                commands.invalidate_taskid()
-        commands.PIN = self.pin
-        commands.TSP_HOST = self.tsp_host
-        # Monitor diagnostico: i moduli core/ non conoscono il coordinator, quindi il
-        # registratore passa da un callback module-level. `None` a monitor spento = costo
-        # nullo. Riassegnato qui a ogni bind, così segue l'auto-spegnimento.
-        commands.DIAG_HOOK = self._diag.record if self._diag is not None else None
-        # MINT_TASKID dal valore d'ambiente (default 1 = i pulsanti coniano il proprio
-        # taskId, fix S26) — rivalutato qui per non restare stale tra entry/reload.
-        commands.MINT_TASKID = os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false", "no")
-        # taskId file nella config dir per-VIN (sopravvive agli update HACS, niente stale condiviso)
-        commands.TASKID_FILE = self.hass.config.path(f"{DOMAIN}_{self.vin}_taskid.txt")
-        probe.VIN = self.vin
-        session.EMAIL = self.email
-        A.BFF = self.bff
-        A.CHANNEL_ID = self.channel_id
-        A.COUNTRY_ID = os.environ.get("OMODA_COUNTRY_ID", A.COUNTRY_ID)
+        Sostituisce il vecchio `_bind_core`, che prima di ogni chiamata riscriveva i
+        global dei moduli `core/` e mezza dozzina di variabili in `os.environ`. Quel
+        meccanismo aveva tre difetti concreti:
+
+        * con DUE veicoli configurati, il secondo entry sovrascriveva la configurazione
+          del primo → un comando poteva partire verso l'auto sbagliata;
+        * fra il bind e l'uso effettivo girava codice in thread executor: un reload
+          dell'entry nel mezzo lasciava metà moduli configurati col vecchio account;
+        * PIN ed email finivano in `os.environ`, leggibile da qualunque cosa giri dentro
+          Home Assistant.
+
+        Ora la configurazione è un oggetto passato per argomento: ogni entry ha il suo,
+        e non esiste stato condiviso da sincronizzare.
+        """
+        from .core.context import CoreCtx
+
+        return CoreCtx(
+            vin=self.vin,
+            tuserid=self.tuserid,
+            pin=self.pin,
+            email=self.email,
+            token_path=self.token_path,
+            # taskId nella config dir per-VIN: sopravvive agli update HACS e non è
+            # condiviso fra veicoli.
+            taskid_file=self.hass.config.path(f"{DOMAIN}_{self.vin}_taskid.txt"),
+            src_dir=os.path.join(os.path.dirname(__file__), "core"),
+            tsp_host=self.tsp_host,
+            bff=self.bff,
+            channel_id=self.channel_id,
+            mint_taskid=os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false", "no"),
+        )
+
+    @property
+    def ctx(self):
+        """Il contesto del veicolo, creato una volta sola.
+
+        Lo STATO per-veicolo (anti-lockout del PIN, taskId in cache, cooldown di sveglia
+        e sonda) vive qui dentro: dev'essere lo stesso oggetto per tutta la vita
+        dell'entry, altrimenti il contatore anti-lockout si azzererebbe a ogni comando e
+        la protezione contro il blocco dell'account non scatterebbe mai."""
+        if self._ctx is None:
+            self._ctx = self._build_ctx()
+        # il monitor diagnostico si accende/spegne a runtime → si riallinea a ogni uso
+        # (è un semplice riferimento a funzione, costo nullo)
+        self._ctx.diag_hook = self._diag.record if self._diag is not None else None
+        return self._ctx
+
+    # NB: non esiste un `_apply_pin_change`. Riconfigurare il PIN RICARICA l'entry, quindi
+    # nasce un coordinator nuovo con un contesto nuovo — il PIN aggiornato ci arriva da sé.
+    # Resta necessario l'azzeramento ESPLICITO dell'anti-lockout (`ctx.reset_pin_lockout()`
+    # in `repairs.py`/`config_flow.py`), perché quello vive in memoria e sopravviverebbe.
 
     # ───────────────── coda comandi (l'auto ne esegue uno alla volta) ─────────────────
     async def _settle_after_command(self) -> None:
@@ -808,7 +814,6 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return res
 
     def _send_command(self, key: str, params: dict | None = None) -> str:
-        self._bind_core()
         from .core import commands as CMD
         msgs: list[str] = []
 
@@ -817,7 +822,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             _LOGGER.info("[cmd] %s", m)
             self._update({"cmd_status": str(m)[:255]})
 
-        CMD.send(key, emit=emit, params=params)
+        CMD.send(self.ctx, key, emit=emit, params=params)
         return msgs[-1] if msgs else "inviato"
 
     def _instrada_rimedio(self, err: Exception, dal_loop: bool = True) -> str:
@@ -879,15 +884,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return await self.hass.async_add_executor_job(self._query_theft)
 
     def _query_theft(self) -> int | None:
-        self._bind_core()
         from .core import commands as CMD
-        return CMD.query_theft_switch()
+        return CMD.query_theft_switch(self.ctx)
 
     async def async_wake(self) -> None:
         await self.hass.async_add_executor_job(self._wake)
 
     def _wake(self) -> None:
-        self._bind_core()
         from .core import wake as WAKE
 
         def emit(m):
@@ -896,7 +899,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
         self._update({"last_wake": dt_util.utcnow()})
         # is_awake: se l'auto sta già pubblicando su MQTT non serve l'SMS.
-        result = WAKE.do_wake(emit, is_awake=lambda: bool(self.data.get("awake")), send_sms=True)
+        result = WAKE.do_wake(self.ctx, emit,
+                              is_awake=lambda: bool(self.data.get("awake")), send_sms=True)
         # [FALLBACK] smsAwaken inaffidabile (test 2026-06-21: A07900 due volte) → se non ha
         # svegliato l'auto, ripiega su un comando REALE (vehicleLocation), che la sveglia al
         # primo colpo e restituisce anche il GPS. A livello coordinator per non creare import
@@ -1005,7 +1009,6 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._arm_hv_followup()
 
     def _probe(self, force: bool = False) -> None:
-        self._bind_core()
         from .core import probe as PROBE
 
         def emit(m):
@@ -1013,7 +1016,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             self._update({"probe_status": str(m)[:255]})
 
         # force=True (poll periodico): ignora il cooldown della sonda.
-        res = PROBE.probe_once(emit, force=force, on_data=self._on_probe_data)
+        res = PROBE.probe_once(self.ctx, emit, force=force, on_data=self._on_probe_data)
         # [2.0] memorizza se l'auto è raggiungibile dal cloud (per la sveglia condizionale del
         # ciclo di poll). Solo se la sonda è andata a buon fine: su busy/eccezione tieni l'ultimo.
         if isinstance(res, dict) and res.get("ok") and "online" in res:
@@ -1114,17 +1117,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
     def _fetch_vehicle_identity(self) -> dict | None:
         """queryList (sola lettura) → {vehicle_name, vehicle_model, vehicle_brand} per il VIN."""
         try:
-            self._bind_core()
             import requests
             from .core import wake
             from .core import omoda_auth as A
-            wake._bff_login()
-            access = wake._access_token()
-            headers = A.headers_post("/tsp/v1/app/vmc/queryList", extra={
+            ctx = self.ctx
+            wake._bff_login(ctx)
+            access = wake._access_token(ctx)
+            headers = A.headers_post("/tsp/v1/app/vmc/queryList", ctx=ctx, extra={
                 "Authorization": f"Bearer {access}",
                 "Content-Type": "application/json; charset=UTF-8",
                 "Accept": "application/json, text/plain, */*"})
-            j = requests.post(A.BFF + "/tsp/v1/app/vmc/queryList",
+            j = requests.post(ctx.bff + "/tsp/v1/app/vmc/queryList",
                               data="{}", headers=headers, timeout=20).json()
             data = j.get("data")
             cands = []
@@ -1173,9 +1176,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return ok, detail
 
     def _check_session(self) -> tuple[bool, str, str]:
-        self._bind_core()
         from .core import session as SESSION
-        ok, detail, status = SESSION.check()
+        ok, detail, status = SESSION.check(self.ctx)
         # Difesa contro il drift dei due letterali: se core/session.py cambiasse il valore di
         # STATUS_EXPIRED, la reauth continuerebbe a scattare (ci si allinea al modulo, che è
         # la fonte, invece di confrontare alla cieca la costante locale).
@@ -1189,10 +1191,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return await self.hass.async_add_executor_job(self._request_otp)
 
     def _request_otp(self) -> str:
-        self._bind_core()
         from .core import session as SESSION
         msgs: list[str] = []
-        SESSION.request_otp(emit=msgs.append)
+        SESSION.request_otp(self.ctx, emit=msgs.append)
         detail = msgs[-1] if msgs else "richiesta inviata"
         self._update({"session_detail": detail})
         return detail
@@ -1204,6 +1205,5 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         return ok, detail
 
     def _confirm_otp(self, code: str) -> tuple[bool, str]:
-        self._bind_core()
         from .core import session as SESSION
-        return SESSION.confirm_otp(code or "")
+        return SESSION.confirm_otp(self.ctx, code or "")
