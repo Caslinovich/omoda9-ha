@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.5.29 — 2026-07-19
+
 ### 🇮🇹 Italiano
 
 - **Aggiornamento di manutenzione: per te non cambia nulla.** Nessuna nuova funzione e nessuna
