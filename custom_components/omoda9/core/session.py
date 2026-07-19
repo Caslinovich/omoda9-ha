@@ -28,10 +28,9 @@ sottostringhe localizzate (che cambierebbero con la lingua dei messaggi).
 import os, sys, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
-import wake  # riusa _bff_login / _refresh_token / TOKEN_PATH
+# P2-2: import relativo di pacchetto (prima: nome nudo + `sys.path.insert(HERE)`).
+from . import wake  # riusa _bff_login / _refresh_token / TOKEN_PATH
 
 EMAIL     = os.environ.get("OMODA_EMAIL", "")   # PER-ACCOUNT: vedi omoda9.env.example
 # Cartella con login_omoda.py / prova_token.py / omoda.py: di default sono in questa stessa

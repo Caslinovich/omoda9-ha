@@ -9,8 +9,14 @@ Uso in 2 fasi (il codice email scade in pochi minuti):
               poi tenta lo Stadio 2 (TSP + lista veicoli).
 """
 import os, sys, time, json, hashlib, requests
-import captcha_solver as C
-import omoda
+# Questo file è eseguito COME SCRIPT in sottoprocesso (session.request_otp), dove non
+# esiste un pacchetto padre → si tenta l'import relativo e si ripiega su quello nudo.
+try:
+    from . import captcha_solver as C
+    from . import omoda
+except ImportError:
+    import captcha_solver as C
+    import omoda
 
 BFF = os.environ.get("OMODA_BFF", "https://legend-oj.omodaauto.nl/api")   # regione (default EU)
 SECRET = "5c7af05e6fbf562842ef483ee96e06a0"

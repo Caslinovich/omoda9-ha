@@ -11,7 +11,12 @@ Per testare la FIRMA senza consumare OTP: usa un <code> finto (es. 000000).
 Se la firma e' giusta l'errore NON sara' piu' "Authorization authentication failed".
 """
 import os, sys, json, requests
-import omoda_auth as A
+# Eseguito COME SCRIPT in sottoprocesso (session.confirm_otp): import relativo con
+# ripiego su quello nudo, così funziona sia importato sia lanciato da riga di comando.
+try:
+    from . import omoda_auth as A
+except ImportError:
+    import omoda_auth as A
 
 # dove salvare il token coniato (per-account); il bridge/coordinator legge lo stesso path
 _TOKEN_OUT = os.environ.get("OMODA_TOKEN_PATH", "token.json")

@@ -330,7 +330,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         giorni a disposizione e il monitor deve riprendere al reload)."""
         rec, self._diag = self._diag, None
         try:
-            import commands
+            from .core import commands
             commands.DIAG_HOOK = None
         except Exception:  # noqa: BLE001 — core/ potrebbe non essere ancora importato
             pass
@@ -728,8 +728,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         importato per primo, i loro global resterebbero stale nello stesso processo.
         [H1] Qui li forziamo TUTTI ai valori di QUESTO entry → robusto rispetto
         all'ordine di import e a entry/reload multipli. Idempotente, in executor."""
-        import wake, commands, probe, session
-        import omoda_auth as A
+        from .core import wake, commands, probe, session
+        from .core import omoda_auth as A
         # env per i moduli che lo rileggono a runtime (wake._token_path, omoda.py, …)
         os.environ["OMODA_TOKEN_PATH"] = self.token_path
         os.environ["VIN"] = self.vin
@@ -830,7 +830,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _send_command(self, key: str, params: dict | None = None) -> str:
         self._bind_core()
-        import commands as CMD  # core/ è sul path (vedi __init__)
+        from .core import commands as CMD
         msgs: list[str] = []
 
         def emit(m):
@@ -873,7 +873,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _query_theft(self) -> int | None:
         self._bind_core()
-        import commands as CMD  # core/ è sul path (vedi __init__)
+        from .core import commands as CMD
         return CMD.query_theft_switch()
 
     async def async_wake(self) -> None:
@@ -881,7 +881,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _wake(self) -> None:
         self._bind_core()
-        import wake as WAKE
+        from .core import wake as WAKE
 
         def emit(m):
             _LOGGER.info("[wake] %s", m)
@@ -1004,7 +1004,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _probe(self, force: bool = False) -> None:
         self._bind_core()
-        import probe as PROBE
+        from .core import probe as PROBE
 
         def emit(m):
             _LOGGER.info("[probe] %s", m)
@@ -1113,7 +1113,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         """queryList (sola lettura) → {vehicle_name, vehicle_model, vehicle_brand} per il VIN."""
         try:
             self._bind_core()
-            import wake, omoda_auth as A, requests
+            import requests
+            from .core import wake
+            from .core import omoda_auth as A
             wake._bff_login()
             access = wake._access_token()
             headers = A.headers_post("/tsp/v1/app/vmc/queryList", extra={
@@ -1170,7 +1172,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _check_session(self) -> tuple[bool, str, str]:
         self._bind_core()
-        import session as SESSION
+        from .core import session as SESSION
         ok, detail, status = SESSION.check()
         # Difesa contro il drift dei due letterali: se core/session.py cambiasse il valore di
         # STATUS_EXPIRED, la reauth continuerebbe a scattare (ci si allinea al modulo, che è
@@ -1186,7 +1188,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _request_otp(self) -> str:
         self._bind_core()
-        import session as SESSION
+        from .core import session as SESSION
         msgs: list[str] = []
         SESSION.request_otp(emit=msgs.append)
         detail = msgs[-1] if msgs else "richiesta inviata"
@@ -1201,5 +1203,5 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     def _confirm_otp(self, code: str) -> tuple[bool, str]:
         self._bind_core()
-        import session as SESSION
+        from .core import session as SESSION
         return SESSION.confirm_otp(code or "")

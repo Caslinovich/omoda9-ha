@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from typing import Any
 
 import voluptuous as vol
@@ -40,15 +39,15 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# P2-2: cartella dei moduli core/. Serve ancora come `cwd`/`OMODA_SRC_DIR` per i
+# sottoprocessi di login (login_omoda.py, prova_token.py), NON più come voce di sys.path.
 _CORE = os.path.join(os.path.dirname(__file__), "core")
-if _CORE not in sys.path:
-    sys.path.insert(0, _CORE)
 
 
 def _clear_pin_lockout() -> None:
     """P0-2: azzera anti-lockout PIN + taskId in cache (module-level in `core/commands`).
     Da chiamare in executor a ogni riconfigurazione del PIN, anche se invariato."""
-    import commands  # noqa: PLC0415 — modulo core/, import lazy fuori dal loop
+    from .core import commands  # noqa: PLC0415 — import lazy: gira in executor
 
     if hasattr(commands, "reset_pin_lockout"):
         commands.reset_pin_lockout()
@@ -85,7 +84,7 @@ def _prepare_env(hass: HomeAssistant, data: dict, token_path: str | None = None)
 def _send_otp(hass: HomeAssistant, data: dict) -> tuple[bool, str]:
     """Risolve il captcha e invia l'OTP all'email (executor) → core.session.request_otp."""
     _prepare_env(hass, data)
-    import session as SESSION
+    from .core import session as SESSION
     msgs: list[str] = []
     ok = SESSION.request_otp(emit=msgs.append)
     return ok, (msgs[-1] if msgs else "")
@@ -94,7 +93,7 @@ def _send_otp(hass: HomeAssistant, data: dict) -> tuple[bool, str]:
 def _mint_token(hass: HomeAssistant, data: dict, code: str) -> tuple[bool, str]:
     """Conia il token dal codice OTP (executor) → core.session.confirm_otp (salva nel pending)."""
     _prepare_env(hass, data)
-    import session as SESSION
+    from .core import session as SESSION
     return SESSION.confirm_otp(code)
 
 
@@ -105,8 +104,8 @@ def _discover(hass: HomeAssistant, data: dict) -> tuple[bool, str, list[str], st
     _prepare_env(hass, data)
     try:
         import requests
-        import omoda_auth as A
-        import wake
+        from .core import omoda_auth as A
+        from .core import wake
         wake.TOKEN_PATH = _pending_token_path(hass)   # token appena coniato
         _ut, tu = wake._bff_login()
         if not tu:

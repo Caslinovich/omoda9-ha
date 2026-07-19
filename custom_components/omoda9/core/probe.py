@@ -26,15 +26,14 @@ un cooldown lungo (default 30 min) per non ripetere a ogni 5A02.
 
 Uso strettamente personale (auto/account di Rino). NON pubblicare token/cert.
 """
-import os, sys, json, time, threading
+import os, json, time, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
 # Riusa l'infrastruttura già verificata di wake.py: login BFF + POST firmato tspconsole.
-import wake as W
-import codes
+# P2-2: import relativi di pacchetto (prima: nomi nudi + `sys.path.insert(HERE)`).
+from . import wake as W
+from . import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
 # PRIVACY: il record grezzo contiene VIN e coordinate GPS → log OPT-IN, spento di default.

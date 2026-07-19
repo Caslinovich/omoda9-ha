@@ -18,16 +18,16 @@ Flusso (verificato sul codice reale, SESSIONE11_REPORT.md):
 
 Uso strettamente personale (auto/account di Rino). NON pubblicare token/cert.
 """
-import os, sys, json, time, threading
+import os, json, time, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
 import requests
-import omoda_auth as A
-import tsp_sign as S
-import codes
+
+# P2-2: import relativi di pacchetto (prima: nomi nudi + `sys.path.insert(HERE)`).
+from . import omoda_auth as A
+from . import tsp_sign as S
+from . import codes
 
 # C1: serializza i refresh del token. keep-alive (coordinator) e un comando possono
 # innescare _refresh_token() insieme: senza lock entrambi userebbero lo STESSO

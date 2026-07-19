@@ -14,7 +14,10 @@ import requests, numpy as np
 from PIL import Image
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import omoda
+try:                        # importato come modulo del pacchetto (runtime HA)
+    from . import omoda
+except ImportError:         # eseguito come script: `login_omoda.py` gira in sottoprocesso
+    import omoda
 
 # NB (2026-06-21): il solver NON usa più OpenCV (cv2). Lo shape-matching è
 # reimplementato con solo numpy + Pillow → installabile su Home Assistant/HAOS

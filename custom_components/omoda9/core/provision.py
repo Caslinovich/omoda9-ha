@@ -42,14 +42,14 @@ Uso strettamente personale (auto/account di Rino). NON pubblicare token/PIN/cert
 import os, sys, json, time, hashlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
 import requests
-import omoda_auth as A
-import tsp_sign as S
-import wake as W          # riusa _access_token / _bff_login / _signed_post / _code_of (già verificati)
-import codes
+
+# P2-2: import relativi di pacchetto (prima: nomi nudi + `sys.path.insert(HERE)`).
+from . import omoda_auth as A
+from . import tsp_sign as S
+from . import wake as W   # riusa _access_token / _bff_login / _signed_post / _code_of (già verificati)
+from . import codes
 
 VIN        = os.environ.get("VIN", "")   # PER-ACCOUNT: vedi omoda9.env.example
 PIN        = os.environ.get("PIN", os.environ.get("OMODA_PIN", ""))   # PIN di controllo (PER-ACCOUNT)

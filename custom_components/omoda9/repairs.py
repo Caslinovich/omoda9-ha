@@ -7,8 +7,6 @@ login → correggerlo è pura scrittura in entry.data + reload: il reload azzera
 l'anti-lockout module-level (`commands.reset_pin_lockout` in `_bind_core`)."""
 from __future__ import annotations
 
-import os
-import sys
 from typing import Any
 
 import voluptuous as vol
@@ -24,10 +22,6 @@ from homeassistant.helpers.selector import (
 
 from .const import CONF_PIN
 
-_CORE = os.path.join(os.path.dirname(__file__), "core")
-if _CORE not in sys.path:
-    sys.path.insert(0, _CORE)
-
 
 def _clear_pin_lockout() -> None:
     """P0-2: azzera INCONDIZIONATAMENTE anti-lockout + taskId in cache (in executor).
@@ -36,7 +30,7 @@ def _clear_pin_lockout() -> None:
     (perché il blocco non era colpa del PIN, o per ritentare) il contatore resterebbe su
     e i comandi continuerebbero a fallire fino allo scadere della finestra. Qui l'utente ha
     fatto un gesto esplicito di rimedio → si riparte sempre puliti."""
-    import commands  # noqa: PLC0415 — modulo core/, import lazy fuori dal loop
+    from .core import commands  # noqa: PLC0415 — import lazy: gira in executor
 
     if hasattr(commands, "reset_pin_lockout"):
         commands.reset_pin_lockout()

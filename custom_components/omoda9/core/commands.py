@@ -18,7 +18,6 @@ Header: Authorization=<userToken>, timestamp=<ms>, Content-Type=application/json
     /root/omoda9_capture_20260620/command_envelopes.txt.
 """
 import os
-import sys
 import json
 import time
 import logging
@@ -30,12 +29,12 @@ import urllib.error
 _LOGGER = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
-import wake
-import tsp_sign
-import omoda_auth as A
-import codes
+
+# P2-2: import relativi di pacchetto (prima: nomi nudi + `sys.path.insert(HERE)`).
+from . import wake
+from . import tsp_sign
+from . import omoda_auth as A
+from . import codes
 # H8: rimosso `importlib.reload(tsp_sign)` a import-time (side-effect inutile; tsp_sign
 # non viene mutato altrove e ricaricarlo all'import poteva azzerare eventuali monkeypatch).
 

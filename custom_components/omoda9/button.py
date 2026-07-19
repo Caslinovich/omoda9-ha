@@ -17,7 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coord = hass.data[DOMAIN][entry.entry_id]
-    import commands as CMD  # core/ sul path
+    from .core import commands as CMD
 
     ents: list[ButtonEntity] = []
     for key, spec in CMD.COMMANDS:
