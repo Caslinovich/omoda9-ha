@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import ssl
@@ -284,7 +285,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
         Nessun file → esce subito e tutto resta dormiente. Con il file, arma anche il
         timer di auto-spegnimento: il monitor è pensato per restare acceso pochi giorni,
-        non deve poter essere dimenticato acceso (logger verboso + file su disco)."""
+        non deve poter essere dimenticato acceso (logger verboso + file su disco).
+
+        Eccezione: bandierina a `0` → `read_switch` ritorna `math.inf` e il timer NON
+        viene armato. Lo spegnimento torna manuale (si cancella la bandierina), scelta
+        di chi sviluppa quando l'evento da osservare è raro e una finestra fissa
+        rischierebbe di scadere proprio prima che capiti."""
         from .diag import DiagRecorder, read_switch
         path = self.hass.config.path(DIAG_SWITCH_FILE)
         until = await self.hass.async_add_executor_job(read_switch, path)
@@ -294,6 +300,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._diag = await self.hass.async_add_executor_job(
             DiagRecorder, jsonl, self.vin, self.email, until
         )
+        if until == math.inf:
+            _LOGGER.warning(
+                "[diag] monitor diagnostico ATTIVO SENZA SCADENZA → %s (dati già "
+                "oscurati; si spegne solo cancellando %s)",
+                jsonl, path,
+            )
+            return
         self._diag_stop_unsub = async_call_later(
             self.hass, max(60.0, until - time.time()), self._diag_autostop_cb
         )

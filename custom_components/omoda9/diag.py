@@ -8,10 +8,15 @@ interruttore nell'interfaccia, non compare nel changelog e non si annuncia all'u
 ATTIVAZIONE — file «bandierina» nella config dir di Home Assistant:
 
     /config/omoda9_diag.on        contenuto = numero di GIORNI (default 3, max 7)
+                                  oppure `0` = NESSUNA scadenza (spegnimento manuale)
 
 Presente  → il monitor parte al caricamento dell'integrazione e si spegne DA SOLO alla
             scadenza (contata dalla data di modifica del file), che viene rinominato in
             `omoda9_diag.off`. Nessun intervento manuale necessario.
+            Con `0` invece resta acceso a tempo indeterminato e si spegne SOLO
+            cancellando la bandierina: da usare quando l'evento da osservare è raro e
+            una finestra fissa rischierebbe di chiudersi proprio prima che capiti.
+            Il file resta comunque limitato dalla rotazione (2 MB + un `.1`).
 Assente   → il codice è completamente DORMIENTE: `coordinator._diag` e
             `commands.DIAG_HOOK` restano `None`, quindi ogni punto di aggancio è un
             singolo confronto `is not None` e non si alloca nulla. Costo nullo sul
@@ -33,6 +38,7 @@ nessun I/O blocca mai il thread paho o l'event loop.
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
@@ -48,6 +54,8 @@ SWITCH_OFF = "omoda9_diag.off"   # nome dopo l'auto-spegnimento
 
 DEFAULT_DAYS = 3
 MAX_DAYS = 7
+# Contenuti della bandierina che disattivano l'auto-spegnimento (confronto minuscolo).
+_NO_EXPIRY = frozenset({"0", "sempre", "always", "inf"})
 BUFFER_MAX = 500                 # eventi tenuti in RAM (ring buffer per la diagnostica HA)
 FILE_MAX_BYTES = 2 * 1024 * 1024  # rotazione del .jsonl (si tiene anche un .jsonl.1)
 QUEUE_MAX = 2000                 # righe in attesa di scrittura; oltre, si scarta e si conta
@@ -151,6 +159,14 @@ def read_switch(path: str) -> float | None:
     """Legge la bandierina. Ritorna l'istante di scadenza (epoch) o None se il monitor
     non va attivato. Se la finestra è già scaduta, spegne rinominando il file in `.off`.
 
+    Contenuto `0` (o `sempre`/`always`) → **nessuna scadenza**: ritorna `math.inf` e il
+    monitor resta acceso finché non lo si spegne a mano cancellando la bandierina. Serve
+    quando non si sa quanto durerà l'osservazione — un evento raro (comandi sovrapposti,
+    reload durante la ricarica) può non capitare entro una finestra fissa, e trovare il
+    monitor spento da solo significa aver perso i giorni di attesa. Il file su disco resta
+    comunque limitato dalla rotazione (2 MB + un `.1`), quindi «acceso per sempre» non è
+    un rischio di spazio; il costo è solo il logger verboso.
+
     La durata parte dalla data di MODIFICA del file: `touch` sulla bandierina rinnova la
     finestra senza doverne cambiare il contenuto. Sola lettura + un eventuale rename:
     da chiamare in executor, mai sul loop."""
@@ -161,8 +177,13 @@ def read_switch(path: str) -> float | None:
     try:
         with open(path) as fh:
             raw = fh.read(32).strip()
+    except OSError:
+        raw = ""
+    if raw.lower() in _NO_EXPIRY:
+        return math.inf
+    try:
         days = int(raw) if raw else DEFAULT_DAYS
-    except (OSError, ValueError):
+    except ValueError:
         days = DEFAULT_DAYS
     days = max(1, min(MAX_DAYS, days))
     until = st.st_mtime + days * 86400
@@ -346,6 +367,11 @@ class DiagRecorder:
 def _iso(ts: float | None) -> str | None:
     if not ts:
         return None
+    # `math.inf` = monitor senza scadenza (bandierina a `0`): non è una data e
+    # `time.localtime` solleverebbe. Si etichetta, così il .jsonl e la diagnostica HA
+    # dicono a colpo d'occhio che resta acceso finché non lo si spegne a mano.
+    if ts == math.inf:
+        return "senza scadenza"
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
 
 
