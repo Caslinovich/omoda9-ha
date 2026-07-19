@@ -35,6 +35,7 @@ from . import wake
 from . import tsp_sign
 from . import omoda_auth as A
 from . import codes
+from . import routing
 from .pin_lockout import PinLockout, PinLockedError
 # H8: rimosso `importlib.reload(tsp_sign)` a import-time (side-effect inutile; tsp_sign
 # non viene mutato altrove e ricaricarlo all'import poteva azzerare eventuali monkeypatch).
@@ -233,17 +234,13 @@ CODE_MEANING = codes.CODE_MEANING
 # `FAILURE_CODES` = comando NON eseguito (auto occupata/a riposo, permesso negato, taskId
 # o token non validi). Distinguere i due è ciò che permette alle entità ottimistiche di
 # NON mostrare un finto "successo" quando l'auto ha rifiutato (vedi Omoda9OptimisticMixin).
-SUCCESS_CODES = frozenset({"000000", "A00079"})
-FAILURE_CODES = frozenset({
-    "A00082",  # auto occupata (transitorio, riprovabile)
-    "A00084",  # comando non consentito su questa auto
-    "A00089", "A00546", "A00567",  # taskId/checkPassword non validi
-    "A00000",  # token scaduto/non valido
-    "A07312",  # rate-limit sveglia
-    "A07900",  # auto a riposo / firma o car_token non validi
-})
-# Codici transitori: il comando può andare a buon fine se ritentato (auto solo occupata).
-RETRYABLE_CODES = frozenset({"A00082"})
+#
+# P2-5: questi insiemi sono ora DERIVATI dalla tabella unica di routing, non più elenchi
+# scritti a mano qui accanto. Erano liste parallele che potevano divergere in silenzio da
+# come i codici venivano davvero instradati.
+SUCCESS_CODES = routing.SUCCESS_CODES
+FAILURE_CODES = routing.FAILURE_CODES
+RETRYABLE_CODES = routing.RETRYABLE_CODES
 
 
 class CommandError(Exception):
@@ -290,22 +287,10 @@ DIAG_HOOK = None
 # secondo thread sta aspettando il lock proprio ora: è la corsa P0-1 vista dal vivo.
 _MINT_INFLIGHT = {"n": 0}
 _MINT_INFLIGHT_LOCK = threading.Lock()
-# P1-2 — classificazione di checkPassword PER CODICE (prima: «tutto ciò che non dà un taskId
-# = PIN errato», che è falso e fa due danni: propone il rimedio sbagliato all'utente e conta
-# verso l'anti-lockout un errore che col PIN non c'entra nulla).
-#
-#   _SESSION_CODES → token/sessione morti: rimedio = riautenticazione (OTP), reason="reauth"
-#   _CONFIG_CODES  → permessi veicolo o richiesta malformata (client/parametri): NON è il PIN,
-#                    non esiste un rimedio automatico → reason="config", solo avviso
-#   tutto il resto  → resta sul ramo PIN (default CONSERVATIVO voluto: A00285/A00282 e i codici
-#                    ancora sconosciuti sono, per quanto osservato, davvero PIN errato)
-#
-# Nessuno dei due insiemi sopra conta verso il blocco né apre il Repair «PIN comandi errato».
-_SESSION_CODES = {"A00000"}
-_CONFIG_CODES = {
-    "A00374", "A00554",                      # permessi/autorizzazione sul veicolo
-    "A00567", "A00604", "A00643", "A00757",  # costruzione richiesta / clientType / taskId
-}
+# P1-2/P2-5 — la classificazione di checkPassword PER CODICE vive ora in `routing.py`
+# (tabella unica). Prima era «tutto ciò che non dà un taskId = PIN errato», che è falso e
+# fa due danni: propone il rimedio sbagliato all'utente e conta verso l'anti-lockout un
+# errore che col PIN non c'entra nulla.
 
 
 def reset_pin_lockout() -> None:
@@ -435,32 +420,30 @@ def _checkpassword(tuid, tentativo):
     _LOGGER.warning("[taskId] checkPassword NON ha restituito un taskId → %s "
                     "(risposta backend grezza; se non è un PIN errato la causa è qui)", detail)
 
-    # NB: nei due rami qui sotto il tentativo resta NON dichiarato di proposito → non
-    # conta verso il blocco. Non è il PIN, e contarlo avvicinerebbe il blocco
-    # dell'account reale per una causa che col PIN non c'entra nulla (P1-2).
-    if str(code) in _SESSION_CODES:
-        # sessione/token (A00000): rimedio = riautenticazione, non riconfigurare il PIN.
-        raise CommandError(
-            f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
-            "Home Assistant (nuovo codice OTP)",
-            code=str(code), reason="reauth")
-    if str(code) in _CONFIG_CODES:
-        # permessi veicolo o richiesta rifiutata per come è costruita: il PIN può essere
-        # perfettamente corretto → nessun Repair PIN (manderebbe a cambiare un PIN giusto).
-        raise CommandError(
-            f"Comando rifiutato dal backend [checkPassword {detail}] — non è il PIN: "
-            "l'account non ha il permesso su questa auto oppure la richiesta è stata "
-            "respinta. Riprova più tardi; se persiste servono i log.",
-            code=str(code), reason="config")
+    # P2-5: un'unica interrogazione alla tabella decide rimedio E se contare per il blocco.
+    # Prima erano due `if` su insiemi separati più un ramo di default: tre punti da tenere
+    # allineati a mano, ed è lì che la classificazione era andata storta.
+    esito = routing.classifica(code, routing.CONTESTO_CHECKPASSWORD)
+    if esito.conta_lockout:
+        tentativo.fallito()
+    raise CommandError(_messaggio_checkpassword(esito, detail),
+                       code=str(code) if code else None, reason=esito.reason)
 
-    # ogni altro esito senza taskId = molto probabilmente PIN comandi errato → conta verso
-    # il blocco e chiedi la riconfig-PIN (default conservativo voluto). Il `detail` col
-    # codice reale resta nel messaggio e nel log per poterlo confermare.
-    tentativo.fallito()
-    raise CommandError(
-        f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo nelle "
-        "impostazioni dell'integrazione",
-        code=str(code) if code else None, reason="pin")
+
+def _messaggio_checkpassword(esito, detail: str) -> str:
+    """Messaggio per l'utente, coerente col rimedio che verrà proposto.
+
+    Separato dalla decisione di proposito (regola H7): il testo si può riscrivere o
+    tradurre senza toccare l'instradamento, e viceversa."""
+    if esito.reason == routing.REASON_REAUTH:
+        return (f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
+                "Home Assistant (nuovo codice OTP)")
+    if esito.reason == routing.REASON_CONFIG:
+        return (f"Comando rifiutato dal backend [checkPassword {detail}] — non è il PIN: "
+                "l'account non ha il permesso su questa auto oppure la richiesta è stata "
+                "respinta. Riprova più tardi; se persiste servono i log.")
+    return (f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo "
+            "nelle impostazioni dell'integrazione")
 
 
 # Cache in memoria del taskId. Coniarlo significa fare tutto il giro di checkPassword (PIN):
@@ -470,8 +453,9 @@ def _checkpassword(tuid, tentativo):
 _TASKID_TTL = int(os.environ.get("OMODA_TASKID_TTL", "600"))   # riuso fino a ~10 min
 _TASKID_CACHE = {"tid": None, "ts": 0.0}
 
-# Codici con cui l'auto dice "questo taskId non va bene" → si riconia e si riprova una volta.
-TASKID_INVALID = frozenset({"A00089", "A00546", "A00567"})
+# Codici con cui l'auto dice "questo taskId non va bene" → si riconia e si riprova una
+# volta. P2-5: derivato dalla tabella unica, non più un elenco parallelo.
+TASKID_INVALID = routing.TASKID_INVALID
 
 
 def invalidate_taskid():
@@ -586,8 +570,10 @@ def send(cmd_key, emit=lambda m: None, params=None):
         except Exception:
             pass
 
-        # taskId rifiutato al primo giro → riconia e ripeti (l'utente non vede un falso errore).
-        if attempt == 1 and str(code) in TASKID_INVALID and MINT_TASKID:
+        # P2-5: la tabella dice se il taskId è da rifare. Al primo giro si riconia e si
+        # riprova, così l'utente non vede un falso errore per un taskId semplicemente scaduto.
+        esito = routing.classifica(code, routing.CONTESTO_COMANDO)
+        if attempt == 1 and esito.riconia_taskid and MINT_TASKID:
             invalidate_taskid()
             emit("taskId non più valido → lo rinnovo e riprovo…")
             continue
@@ -596,14 +582,12 @@ def send(cmd_key, emit=lambda m: None, params=None):
     meaning = CODE_MEANING.get(code, raw[:120])
     out = f"{c['name']}: HTTP {status} {code or ''} — {meaning}"
     emit(out)
-    # esito reale dal `code`: un codice di fallimento noto = comando NON eseguito → solleva
-    # CommandError (l'emit ha già pubblicato il dettaglio su «Esito comando»). I codici
-    # sconosciuti restano "non bloccanti" (return) per prudenza: non inventiamo un fallimento.
-    if str(code) in FAILURE_CODES:
-        # A00000 = token scaduto → reauth (nuovo OTP); gli altri rifiuti non hanno rimedio
-        # automatico (auto occupata/non consentita/a riposo) → solo avviso.
-        reason = "reauth" if str(code) == "A00000" else None
-        raise CommandError(out, code=str(code), reason=reason)
+    # Esito reale dal `code` (il backend risponde sempre HTTP 200). Un fallimento noto =
+    # comando NON eseguito → CommandError, così le entità ottimistiche annullano lo stato
+    # invece di mostrare un finto successo. I codici sconosciuti restano non bloccanti per
+    # prudenza: non si inventa un fallimento che il backend non ha dichiarato.
+    if esito.fallimento:
+        raise CommandError(out, code=esito.code, reason=esito.reason)
     return out
 
 

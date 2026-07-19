@@ -786,16 +786,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                                   reason=getattr(err, "reason", None),
                                   code=getattr(err, "code", None),
                                   err_type=type(err).__name__, msg=str(err))
-            # Routing per CAUSA (CommandError.reason), non solo per codice:
-            #   reason="reauth" → riautenticazione nativa HA (nuovo OTP: sessione/token morti)
-            #   reason="pin"    → Repair issue fixabile che apre la riconfig del PIN comandi
-            # NB: il PIN errato NON tocca `session_ok` (la sessione è valida, i sensori vanno):
-            # sarebbe il rimedio sbagliato (l'OTP non cambia il PIN). Vedi audit [CRITICO].
-            reason = getattr(err, "reason", None)
-            if reason == "reauth":
-                self.entry.async_start_reauth(self.hass)
-            elif reason == "pin":
-                self._raise_pin_issue(str(err))
+            # P2-5: instradamento per CAUSA tramite la tabella unica. Entrambi i percorsi
+            # (questo e il fallback di `_wake`) chiamano lo STESSO helper: prima erano due
+            # catene di `if` scritte a mano, e quella del fallback classificava come «PIN
+            # errato» rifiuti che erano di permessi o di sessione.
+            self._instrada_rimedio(err)
             raise
         if self._diag is not None:
             self._diag.record("command", key=key, ok=True,
@@ -824,6 +819,34 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
         CMD.send(key, emit=emit, params=params)
         return msgs[-1] if msgs else "inviato"
+
+    def _instrada_rimedio(self, err: Exception, dal_loop: bool = True) -> str:
+        """Errore di comando → azione di rimedio, decisa dalla tabella unica (P2-5).
+
+        Punto SOLO di instradamento: lo condividono il comando dalla UI e il fallback
+        della sveglia. `dal_loop=False` quando si è in un thread executor, dove le
+        chiamate a Home Assistant vanno schedulate sul loop.
+
+        Il PIN errato NON tocca `session_ok`: la sessione è valida e i sensori
+        funzionano: il problema è solo il PIN a 4 cifre dei comandi remoti, e proporre
+        la riautenticazione sarebbe il rimedio sbagliato (l'OTP non cambia il PIN).
+        """
+        from .core import routing
+
+        azione = routing.azione_per_reason(getattr(err, "reason", None))
+        if azione == routing.AZIONE_REAUTH:
+            if dal_loop:
+                self.entry.async_start_reauth(self.hass)
+            else:
+                self.hass.add_job(self.entry.async_start_reauth, self.hass)
+        elif azione == routing.AZIONE_REPAIR_PIN:
+            if dal_loop:
+                self._raise_pin_issue(str(err))
+            else:
+                self.hass.add_job(self._raise_pin_issue, str(err))
+        # AZIONE_AVVISO: nessun rimedio automatico. Il dettaglio è già stato pubblicato
+        # su «Esito comando» dall'`emit`, quindi l'utente lo vede comunque.
+        return azione
 
     # ───────────────── Repair "PIN comandi errato" (riconfig senza smontare) ─────────────────
     @property
@@ -886,15 +909,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 self._send_command("localizza")
             except Exception as err:  # noqa: BLE001 — il fallback non deve far fallire la sveglia
                 emit(f"fallback Localizza fallito: {err}")
-                # P0-3: `_send_command` qui è chiamato "a mano" (fuori da async_send_command),
-                # quindi il routing del rimedio non scattava: un PIN errato bruciava un
-                # tentativo di anti-lockout in SILENZIO, senza Repair né reauth. Stesso
-                # instradamento della UI, schedulato sul loop (siamo in executor).
-                reason = getattr(err, "reason", None)
-                if reason == "reauth":
-                    self.hass.add_job(self.entry.async_start_reauth, self.hass)
-                elif reason == "pin":
-                    self.hass.add_job(self._raise_pin_issue, str(err))
+                # P0-3/P2-5: `_send_command` qui è chiamato "a mano" (fuori da
+                # async_send_command), quindi il routing del rimedio non scattava: un PIN
+                # errato bruciava un tentativo di anti-lockout in SILENZIO, senza Repair né
+                # reauth. Ora passa dallo STESSO helper della UI — non da una seconda catena
+                # di `if` da tenere allineata. `dal_loop=False`: siamo in executor.
+                self._instrada_rimedio(err, dal_loop=False)
 
     def _is_hv_on(self) -> bool:
         """True se l'alta tensione è accesa (marcia, ricarica o clima): è l'UNICO stato in cui
