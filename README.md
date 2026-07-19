@@ -188,4 +188,9 @@ even without redoing the OTP from the config flow.
 
 ## License
 
-[MIT](LICENSE). Independent, unofficial project.
+[MIT](LICENSE).
+
+**DISCLAIMER:** this is an UNOFFICIAL project, the result of reverse-engineering.
+It is NOT affiliated with, endorsed by, or supported by Omoda, Jaecoo, Chery, or
+any of their subsidiaries. All trademarks belong to their respective owners.
+Use at your own risk.

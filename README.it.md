@@ -187,4 +187,9 @@ anche senza rifare l'OTP dal config flow.
 
 ## Licenza
 
-[MIT](LICENSE). Progetto indipendente, non ufficiale.
+[MIT](LICENSE).
+
+**AVVERTENZA:** questo è un progetto NON UFFICIALE, frutto di reverse-engineering.
+NON è affiliato, approvato o supportato da Omoda, Jaecoo, Chery o da alcuna delle
+loro società controllate. Tutti i marchi appartengono ai rispettivi proprietari.
+Usalo a tuo rischio.
