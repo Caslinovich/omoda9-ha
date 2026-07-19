@@ -41,15 +41,29 @@ PYEXE     = sys.executable  # il venv del ponte (ha captcha/sm4/requests)
 _TIMEOUT  = int(os.environ.get("OMODA_OTP_TIMEOUT", "120"))
 
 
+# P1-1 (H7): marcatori STABILI dell'esito di check(). Il chiamante instrada il rimedio su
+# questi, MAI sul testo umano (che è localizzato e può cambiare a ogni ritocco di copy).
+STATUS_OK = "OK"                # login BFF riuscito col token attuale
+STATUS_EXPIRED = "EXPIRED"      # token/sessione morti → serve un OTP nuovo (reauth)
+STATUS_NET_ERROR = "NET_ERROR"  # errore di rete/transitorio → NON è una sessione scaduta
+
+
 def check():
-    """Ritorna (ok: bool, dettaglio: str). ok=True se un login BFF col token attuale riesce."""
+    """Ritorna (ok: bool, dettaglio: str, status: str).
+
+    `status` è il marcatore stabile (STATUS_OK/EXPIRED/NET_ERROR): è ciò su cui il
+    coordinator decide se aprire la riautenticazione. `dettaglio` è solo per l'utente.
+    Distinguere EXPIRED da NET_ERROR è essenziale: un blip di rete NON deve far comparire
+    la card «Riautentica» (l'utente rifarebbe un OTP inutile)."""
     try:
         ut, tu = wake._bff_login()
     except Exception as e:
-        return False, f"errore rete: {type(e).__name__}"
+        return False, f"errore rete: {type(e).__name__}", STATUS_NET_ERROR
     if ut:
-        return True, "Sessione attiva ✅"
-    return False, "Sessione scaduta ❌ — premi «Richiedi codice OTP» (app ufficiale chiusa)"
+        return True, "Sessione attiva ✅", STATUS_OK
+    return (False,
+            "Sessione scaduta ❌ — premi «Richiedi codice OTP» (app ufficiale chiusa)",
+            STATUS_EXPIRED)
 
 
 def refresh():
@@ -75,13 +89,24 @@ def _call_env():
     return email, src_dir, timeout
 
 
+def _subenv(**extra):
+    """P1-4: ambiente EFFIMERO per il sottoprocesso. Email e OTP viaggiano qui e NON in argv:
+    la riga di comando è leggibile da qualsiasi utente della macchina (`ps aux`, /proc/<pid>/cmdline),
+    l'environment di un processo no. La copia è locale alla chiamata → non sporca os.environ."""
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in extra.items() if v is not None})
+    return env
+
+
 def request_otp(emit=lambda m: None):
     """Invia il codice OTP alla mail dell'utente. True se l'invio è andato a buon fine."""
     email, src_dir, timeout = _call_env()
     emit("invio codice OTP alla mail…")
     try:
-        r = subprocess.run([PYEXE, "login_omoda.py", "invia", email],
-                           cwd=src_dir, capture_output=True, text=True, timeout=timeout)
+        # email via env (P1-4), non in argv: login_omoda.py la rilegge da OMODA_EMAIL.
+        r = subprocess.run([PYEXE, "login_omoda.py", "invia"],
+                           cwd=src_dir, capture_output=True, text=True, timeout=timeout,
+                           env=_subenv(OMODA_EMAIL=email))
     except subprocess.TimeoutExpired:
         emit("timeout invio OTP — riprova")
         return False
@@ -103,14 +128,17 @@ def confirm_otp(code, emit=lambda m: None):
     email, src_dir, timeout = _call_env()
     emit("conio il token col codice…")
     try:
-        r = subprocess.run([PYEXE, "prova_token.py", email, code],
-                           cwd=src_dir, capture_output=True, text=True, timeout=timeout)
+        # email E codice OTP via env (P1-4), non in argv: il codice è una credenziale usa-e-getta
+        # ma resterebbe comunque visibile in `ps` per tutta la durata della chiamata.
+        r = subprocess.run([PYEXE, "prova_token.py"],
+                           cwd=src_dir, capture_output=True, text=True, timeout=timeout,
+                           env=_subenv(OMODA_EMAIL=email, OMODA_OTP=code))
     except subprocess.TimeoutExpired:
         return False, "timeout conio token"
     out = (r.stdout or "") + (r.stderr or "")
     # H7: esito su returncode + sentinella stabile, non su sottostringhe localizzate
     if r.returncode == 0 and "RESULT: OK" in out:
-        ok, detail = check()
+        ok, _detail, _status = check()
         return ok, ("Sessione ripristinata ✅" if ok else "token coniato ma login ancora KO")
     tail = out.strip().splitlines()[-1] if out.strip() else f"rc={r.returncode}"
     return False, f"codice rifiutato: {tail[:120]}"

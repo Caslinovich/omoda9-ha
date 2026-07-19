@@ -23,6 +23,11 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     DOMAIN, CONF_EMAIL, CONF_PIN, CONF_VIN, CONF_TUSERID,
@@ -283,8 +288,13 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.hass.async_add_executor_job(_clear_pin_lockout)
                 return self.async_update_reload_and_abort(
                     entry, data={**entry.data, CONF_PIN: new_pin})
+        # P1-5: campo PASSWORD e NESSUN default col PIN attuale. Prima il PIN comandi
+        # compariva in chiaro nel form (e nello screenshot che l'utente allega al supporto):
+        # è una credenziale. Si riscrive da zero, mascherato.
         schema = vol.Schema({
-            vol.Required(CONF_PIN, default=entry.data.get(CONF_PIN, "")): str,
+            vol.Required(CONF_PIN): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
         })
         return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
 

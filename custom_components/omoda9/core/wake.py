@@ -168,12 +168,17 @@ def _bff_login(_allow_refresh=True):
     except Exception:
         return None, None
     d = j.get("data", {}) if isinstance(j, dict) else None
-    if not isinstance(d, dict):
+    # P1-3: il gate del refresh sta sull'ASSENZA di userToken, non sul solo `data` non-dict.
+    # Prima, un `data` che ERA un dict ma senza userToken (es. {} o un body d'errore
+    # strutturato) saltava del tutto il rinnovo → si tornava (None,None) e l'utente si vedeva
+    # chiedere un OTP quando sarebbe bastato il refresh_token silenzioso.
+    ut = d.get("userToken") if isinstance(d, dict) else None
+    if not ut:
         # sessione scaduta: prova UN rinnovo automatico del token e ritenta una sola volta
         if _allow_refresh and _refresh_token():
             return _bff_login(_allow_refresh=False)
         return None, None
-    return d.get("userToken"), d.get("tUserId")
+    return ut, d.get("tUserId")
 
 def _signed_post(ut: str, path: str, params: dict):
     ts = int(time.time() * 1000)

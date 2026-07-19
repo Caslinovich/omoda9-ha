@@ -284,6 +284,9 @@
       "corrente_batteria_hv": {
         "name": "HV battery current"
       },
+      "dati_auto_aggiornati": {
+        "name": "Car data updated"
+      },
       "esito_comando": {
         "name": "Command result"
       },

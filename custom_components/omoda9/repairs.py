@@ -16,6 +16,11 @@ import voluptuous as vol
 from homeassistant import data_entry_flow
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import CONF_PIN
 
@@ -84,8 +89,13 @@ class Omoda9PinRepairFlow(RepairsFlow):
                 # P0-2: reset incondizionato, anche se il PIN reinserito è identico.
                 await self.hass.async_add_executor_job(_clear_pin_lockout)
                 return self.async_create_entry(title="", data={})
+        # P1-5: campo PASSWORD, nessun default col PIN attuale (credenziale in chiaro nel form).
         schema = vol.Schema(
-            {vol.Required(CONF_PIN, default=entry.data.get(CONF_PIN, "")): str}
+            {
+                vol.Required(CONF_PIN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                )
+            }
         )
         return self.async_show_form(
             step_id="pin", data_schema=schema, errors=errors

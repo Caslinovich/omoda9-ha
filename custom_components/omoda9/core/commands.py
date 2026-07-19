@@ -258,6 +258,9 @@ class CommandError(Exception):
                    sessione: il token è valido, i sensori funzionano.
       - "reauth" = sessione/token scaduti (login fallito, code A00000) → riautenticazione
                    nativa HA (nuovo OTP). L'OTP NON cambia il PIN: i due canali sono distinti.
+      - "config" = rifiuto NON imputabile al PIN né alla sessione (permessi veicolo, richiesta
+                   malformata, conio taskId disattivato): nessun rimedio automatico, solo
+                   avviso. Non apre il Repair PIN e non conta per l'anti-lockout.
       - None     = altro rifiuto dell'auto (occupata, non consentito, a riposo): solo avviso."""
 
     def __init__(self, message: str, code: str | None = None, reason: str | None = None) -> None:
@@ -278,9 +281,22 @@ _PIN_FAIL = {"n": 0, "ts": 0.0}
 _MINT_LOCK = threading.Lock()
 _PIN_FAIL_MAX = int(os.environ.get("OMODA_PIN_FAIL_MAX", "2"))
 _PIN_FAIL_WINDOW = int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600"))
-# codici checkPassword che NON indicano un PIN errato (sessione/token) → non contano
-# per l'anti-lockout (altrimenti un token scaduto bloccherebbe a torto il conio).
-_NON_PIN_CODES = {"A00000"}
+# P1-2 — classificazione di checkPassword PER CODICE (prima: «tutto ciò che non dà un taskId
+# = PIN errato», che è falso e fa due danni: propone il rimedio sbagliato all'utente e conta
+# verso l'anti-lockout un errore che col PIN non c'entra nulla).
+#
+#   _SESSION_CODES → token/sessione morti: rimedio = riautenticazione (OTP), reason="reauth"
+#   _CONFIG_CODES  → permessi veicolo o richiesta malformata (client/parametri): NON è il PIN,
+#                    non esiste un rimedio automatico → reason="config", solo avviso
+#   tutto il resto  → resta sul ramo PIN (default CONSERVATIVO voluto: A00285/A00282 e i codici
+#                    ancora sconosciuti sono, per quanto osservato, davvero PIN errato)
+#
+# Nessuno dei due insiemi sopra incrementa `_PIN_FAIL` né apre il Repair «PIN comandi errato».
+_SESSION_CODES = {"A00000"}
+_CONFIG_CODES = {
+    "A00374", "A00554",                      # permessi/autorizzazione sul veicolo
+    "A00567", "A00604", "A00643", "A00757",  # costruzione richiesta / clientType / taskId
+}
 
 
 def reset_pin_lockout() -> None:
@@ -356,12 +372,21 @@ def _mint_taskid(tuid):
         detail = f"code={code}" + (f" '{cp_msg[:100]}'" if cp_msg else "")
         _LOGGER.warning("[taskId] checkPassword NON ha restituito un taskId → %s "
                         "(risposta backend grezza; se non è un PIN errato la causa è qui)", detail)
-        if str(code) in _NON_PIN_CODES:
+        if str(code) in _SESSION_CODES:
             # sessione/token (A00000): NON è colpa del PIN → non contare l'anti-lockout, chiedi reauth.
             raise CommandError(
                 f"Sessione scaduta [checkPassword {detail}] — riautentica dall'avviso di "
                 "Home Assistant (nuovo codice OTP)",
                 code=str(code), reason="reauth")
+        if str(code) in _CONFIG_CODES:
+            # P1-2: permessi veicolo o richiesta rifiutata per come è costruita. Il PIN può
+            # essere perfettamente corretto → NON incrementare l'anti-lockout e NON aprire il
+            # Repair PIN (manderebbe l'utente a cambiare un PIN giusto). Solo avviso.
+            raise CommandError(
+                f"Comando rifiutato dal backend [checkPassword {detail}] — non è il PIN: "
+                "l'account non ha il permesso su questa auto oppure la richiesta è stata "
+                "respinta. Riprova più tardi; se persiste servono i log.",
+                code=str(code), reason="config")
         # ogni altro esito senza taskId = molto probabilmente PIN comandi errato → conta e chiedi
         # la riconfig-PIN. Il `detail` (code reale) è ora nel messaggio e nel log per confermarlo.
         _PIN_FAIL["n"] += 1
@@ -457,11 +482,15 @@ def send(cmd_key, emit=lambda m: None, params=None):
         # get_taskid propaga CommandError (PIN/anti-lockout/sessione) col suo `reason`.
         taskid, src = get_taskid(tuid, emit, force_mint=(attempt == 2))
         if not taskid:
-            # nessun taskId ma nessuna eccezione = conio disattivato e nessun taskId env/file.
-            emit("nessun taskId disponibile")
+            # P1-2 (#30): nessun taskId MA nessuna eccezione = il conio è DISATTIVATO
+            # (OMODA_MINT_TASKID=0) e non c'era un taskId né in env né su file. Il PIN non
+            # c'entra: dire «PIN errato» mandava l'utente a riconfigurare un PIN sano.
+            emit("nessun taskId disponibile (conio disattivato)")
             raise CommandError(
-                "PIN comandi errato — riconfiguralo nelle impostazioni dell'integrazione",
-                reason="pin")
+                "Conio del taskId disattivato (OMODA_MINT_TASKID=0) e nessun taskId "
+                "disponibile: i comandi non possono partire. Riattiva il conio automatico "
+                "per usare i pulsanti.",
+                reason="config")
 
         ts = int(time.time() * 1000)
         body = dict(c["body"])

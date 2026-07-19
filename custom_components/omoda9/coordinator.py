@@ -43,6 +43,11 @@ from .const import (
 # Cert minimi per il mutual-TLS MQTT (il .cer del server non serve a tls_set, come nel bridge).
 REQUIRED_CERTS = ("ca.pem", "client.pem", "client.key")
 
+# P1-1: marcatore stabile restituito da core/session.py `check()` per «token morto».
+# Deve restare allineato a `session.STATUS_EXPIRED` (il modulo core/ è importabile solo a
+# runtime, dentro l'executor, quindi qui non lo si può importare a module-level).
+SESSION_STATUS_EXPIRED = "EXPIRED"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -1029,20 +1034,27 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             return None
 
     async def async_check_session(self) -> tuple[bool, str]:
-        ok, detail = await self.hass.async_add_executor_job(self._check_session)
+        ok, detail, status = await self.hass.async_add_executor_job(self._check_session)
         self._update({"session_ok": ok, "session_detail": detail})
-        # Sessione/token scaduti (NON un errore di rete transitorio) → riautenticazione nativa
-        # HA: mostra la card "Riautentica". session.check() ritorna "Sessione scaduta …" solo
-        # quando il login BFF col token attuale fallisce per token morto. HA deduplica: se una
-        # reauth è già in corso non ne apre un'altra. Le entità OTP diagnostiche restano fallback.
-        if not ok and detail.startswith("Sessione scaduta"):
+        # P1-1 (H7): la reauth si decide sul MARCATORE STABILE, non sul testo umano. Prima si
+        # faceva `detail.startswith("Sessione scaduta")`: bastava ritoccare il messaggio (o
+        # tradurlo) per non aprire più la card «Riautentica». Solo EXPIRED = token morto; un
+        # NET_ERROR è transitorio e NON deve far rifare un OTP inutile all'utente.
+        # HA deduplica: se una reauth è già in corso non ne apre un'altra.
+        if status == SESSION_STATUS_EXPIRED:
             self.entry.async_start_reauth(self.hass)
         return ok, detail
 
-    def _check_session(self) -> tuple[bool, str]:
+    def _check_session(self) -> tuple[bool, str, str]:
         self._bind_core()
         import session as SESSION
-        return SESSION.check()
+        ok, detail, status = SESSION.check()
+        # Difesa contro il drift dei due letterali: se core/session.py cambiasse il valore di
+        # STATUS_EXPIRED, la reauth continuerebbe a scattare (ci si allinea al modulo, che è
+        # la fonte, invece di confrontare alla cieca la costante locale).
+        if status == getattr(SESSION, "STATUS_EXPIRED", SESSION_STATUS_EXPIRED):
+            status = SESSION_STATUS_EXPIRED
+        return ok, detail, status
 
     # ───────────────── recupero sessione (OTP da HA) ─────────────────
     async def async_request_otp(self) -> str:

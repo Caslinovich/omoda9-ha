@@ -141,4 +141,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if coordinator is not None:
             # async_stop è bloccante (loop_stop fa join del thread paho) → executor.
             await hass.async_add_executor_job(coordinator.async_stop)
+        # P1-4: igiene segreti. Il config flow scrive PIN ed email in os.environ per passarli
+        # ai moduli core/; l'environment del processo HA è però leggibile da tutto ciò che gira
+        # dentro HA (altre integrazioni, template, add-on con accesso a /proc). Scaricata
+        # l'integrazione non servono più → si tolgono. Sicuro: al setup successivo il
+        # coordinator li reinietta come GLOBAL dei moduli (`_bind_core`: commands.PIN /
+        # session.EMAIL), quindi un reload non perde nulla.
+        for _var in ("OMODA_PIN", "OMODA_EMAIL"):
+            os.environ.pop(_var, None)
     return ok

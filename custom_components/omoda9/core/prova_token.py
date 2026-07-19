@@ -72,9 +72,12 @@ def _redact(obj):
     return obj
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    # P1-4: email e codice OTP possono arrivare dall'ambiente (OMODA_EMAIL/OMODA_OTP) invece
+    # che da argv → non compaiono in `ps`/`/proc/<pid>/cmdline`. argv resta per l'uso a mano.
+    email = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OMODA_EMAIL", "")
+    code = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("OMODA_OTP", "")
+    if not (email and code):
         print(__doc__); sys.exit(1)
-    email, code = sys.argv[1], sys.argv[2]
     secret  = sys.argv[3] if len(sys.argv) > 3 else "prod"
     emailfmt= sys.argv[4] if len(sys.argv) > 4 else "module"
     codefmt = sys.argv[5] if len(sys.argv) > 5 else "plain"

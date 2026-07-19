@@ -284,6 +284,9 @@
       "corrente_batteria_hv": {
         "name": "Corrente batteria HV"
       },
+      "dati_auto_aggiornati": {
+        "name": "Dati auto aggiornati"
+      },
       "esito_comando": {
         "name": "Esito comando"
       },

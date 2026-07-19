@@ -141,10 +141,17 @@ def _emit_result(ok):
 
 if __name__ == "__main__":
     a = sys.argv
-    if len(a) >= 3 and a[1] == "invia":
-        _emit_result(invia(a[2]))
-    elif len(a) >= 3 and a[1] == "invia-sms":
-        _emit_result(invia_sms(a[2], a[3] if len(a) > 3 else "39"))
+    # P1-4: l'email può arrivare dall'ambiente (OMODA_EMAIL) invece che da argv, così non
+    # finisce nella riga di comando visibile in `ps`. argv resta supportato per l'uso a mano.
+    _env_email = os.environ.get("OMODA_EMAIL", "")
+
+    def _email(idx):
+        return a[idx] if len(a) > idx else _env_email
+
+    if len(a) >= 2 and a[1] == "invia" and _email(2):
+        _emit_result(invia(_email(2)))
+    elif len(a) >= 2 and a[1] == "invia-sms" and _email(2):
+        _emit_result(invia_sms(_email(2), a[3] if len(a) > 3 else "39"))
     elif len(a) >= 4 and a[1] == "token":
         _emit_result(token(a[2], a[3]))
     elif len(a) >= 4 and a[1] == "token-sms":

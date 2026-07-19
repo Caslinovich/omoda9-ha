@@ -24,8 +24,11 @@ from .const import DOMAIN, CERT_FILES
 
 # Chiavi da oscurare ovunque compaiano (config entry + eventuali dict annidati).
 # NB: «seq» sta qui perché nel payload realtime vale "<VIN>-<timestamp>" → contiene il VIN.
+# NB: «certs_src» è il PERCORSO da cui l'utente ha importato i certificati mutual-TLS: è
+# info-disclosure sul filesystem (nome utente, struttura delle cartelle, a volte un backup
+# dell'app) e non serve al supporto → oscurato (P1-6).
 TO_REDACT = {
-    "email", "pin", "vin", "tuserid", "seq",
+    "email", "pin", "vin", "tuserid", "seq", "certs_src",
     "lat", "lon", "latitude", "longitude", "position",
 }
 
@@ -54,7 +57,9 @@ async def async_get_config_entry_diagnostics(
             # titolo forzato senza VIN (il titolo reale è "Omoda 9 (<VIN>)")
             "title": "Omoda 9",
             "data": async_redact_data(dict(entry.data), TO_REDACT),
-            "options": dict(entry.options),
+            # anche le options passano dalla redazione: oggi contengono solo intervalli di
+            # polling, ma così una chiave sensibile aggiunta domani è già coperta.
+            "options": async_redact_data(dict(entry.options), TO_REDACT),
         },
     }
 
