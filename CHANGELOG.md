@@ -6,6 +6,51 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.6.0 — 2026-07-20
+
+### 🇮🇹 Italiano
+
+- **Grande lavoro di riordino interno: non cambia nulla in ciò che vedi e usi.** Nessuna
+  funzione nuova, nessun pulsante spostato, nessuna entità in più o in meno. Cambia il
+  modo in cui l'integrazione è scritta sotto il cofano.
+- **Perché l'abbiamo fatto.** Alcuni problemi seri visti nei mesi scorsi — il PIN che si
+  bloccava da solo, gli aggiornamenti automatici che continuavano a interrogare l'auto
+  anche da spenti, il messaggio d'errore sbagliato che ti mandava a cambiare un PIN in
+  realtà corretto — erano stati sistemati uno per uno. Ora abbiamo cambiato le fondamenta
+  perché quel genere di problema **non possa più ripresentarsi**, invece di correggerlo
+  ogni volta che salta fuori.
+- **La novità più importante non si vede.** L'integrazione ha ora una batteria di **184
+  controlli automatici** che verificano da soli, in pochi secondi, che tutto funzioni:
+  comandi, accesso, telemetria, avvisi e persino il conteggio esatto delle 105 entità.
+  Prima l'unico modo di provare una modifica era **provarla sull'auto vera**. Da oggi non
+  serve più: le modifiche future arrivano già verificate.
+- **Preparato il supporto a più auto sullo stesso Home Assistant.** Non è ancora attivo,
+  ma l'ostacolo tecnico che lo impediva è stato rimosso.
+- **Un po' più di riservatezza.** Il PIN e l'indirizzo email non transitano più in una
+  zona di memoria che altre integrazioni installate potevano leggere.
+- **Puoi aggiornare tranquillamente:** il comportamento è identico a prima.
+
+### 🇬🇧 English
+
+- **Major internal clean-up: nothing changes in what you see and use.** No new features,
+  no buttons moved, no entities added or removed. What changed is how the integration is
+  written under the hood.
+- **Why we did it.** Some serious problems seen in recent months — the PIN locking itself
+  out, automatic updates that kept polling the car even when switched off, the wrong error
+  message sending you to change a PIN that was actually correct — had been fixed one by
+  one. We have now changed the foundations so that this *kind* of problem **can no longer
+  happen at all**, rather than fixing it each time it appears.
+- **The most important change is invisible.** The integration now has a battery of **184
+  automated checks** that verify on their own, in a few seconds, that everything works:
+  commands, sign-in, telemetry, warnings, even the exact count of the 105 entities.
+  Previously the only way to test a change was **to try it on the real car**. That is no
+  longer needed: future changes arrive already verified.
+- **Groundwork for multiple cars on the same Home Assistant.** Not enabled yet, but the
+  technical obstacle that prevented it has been removed.
+- **A little more privacy.** Your PIN and email address no longer pass through an area of
+  memory that other installed integrations could read.
+- **You can update safely:** behaviour is identical to before.
+
 ## v1.5.29 — 2026-07-19
 
 ### 🇮🇹 Italiano
