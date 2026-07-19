@@ -40,6 +40,10 @@ from .const import (
     CONF_VEHICLE_NAME, DATA_VEHICLE_MODEL, DATA_VEHICLE_BRAND,
     DEFAULTS, DIAG_SWITCH_FILE,
 )
+from .timers import (
+    TimerRegistry, GRUPPO_POLL,
+    KEEPALIVE, POLL, HV_POLL, STARTUP_PROBE, DRIVE_WATCH,
+)
 
 # Cert minimi per il mutual-TLS MQTT (il .cer del server non serve a tls_set, come nel bridge).
 REQUIRED_CERTS = ("ca.pem", "client.pem", "client.key")
@@ -164,27 +168,22 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             os.environ["OMODA_EMAIL"] = self.email
 
         self._car = None  # paho mqtt.Client (importato in _connect_car, executor)
-        self._keepalive_unsub = None  # cancella il timer keep-alive sessione
+        # P2-4: registro UNICO dei timer (keep-alive, poll, follow-up HV, sonda iniziale,
+        # battito marcia). Prima erano cinque attributi `_*_unsub` cancellati in tre punti
+        # e ri-armati in altri due → poll orfani che contattavano il cloud a integrazione
+        # spenta. Ora l'invariante «dopo lo stop nessun timer si ri-arma» vive in un posto
+        # solo: `TimerRegistry.close()`.
+        self._timers = TimerRegistry()
         # poll telemetria periodico (sveglia+lettura). Intervalli in MINUTI dalle opzioni
         # (0 = off): a riposo `poll_normal_min`, alla colonnina `poll_charging_min`.
         opt = entry.options or {}
         self.poll_normal_min = int(opt.get(CONF_POLL_NORMAL, DEFAULT_POLL_NORMAL_MIN))
         self.poll_charging_min = int(opt.get(CONF_POLL_CHARGING, DEFAULT_POLL_CHARGING_MIN))
-        self._poll_unsub = None       # cancella il timer del poll (async_call_later)
         self._poll_busy = False       # evita sovrapposizioni tra cicli
         # follow-up "alta tensione accesa": quando l'HV è on (marcia/ricarica) la telemetria
         # realtime è VERA → rileggiamo a raffica per catturare odometro/SOC che salgono, poi
         # smettiamo da soli quando si rispegne. Zero comandi all'auto (vedi HV_ON_POLL_* in const).
-        self._hv_poll_unsub = None    # timer auto-rischedulante del follow-up HV
         self._hv_poll_count = 0       # letture ravvicinate fatte nella finestra HV-on (cap HV_ON_POLL_MAX)
-        self._startup_probe_unsub = None  # one-shot: semina il follow-up subito dopo l'avvio
-        # P0-4: `async_stop` cancella i timer, ma una `async_probe` GIÀ IN VOLO (executor) al
-        # ritorno chiamava `_arm_hv_followup` e ne ri-armava uno NUOVO → il poll cloud
-        # sopravviveva all'unload/riavvio dell'integrazione. Questo flag è il punto di non ritorno.
-        self._closing = False
-        # battito di rilevamento marcia (sola lettura): fa partire il refresh automatico durante un
-        # viaggio, dato che l'auto in movimento NON manda push MQTT. Vedi DRIVE_WATCH_EVERY.
-        self._drive_watch_unsub = None
         # [2.0] esito dell'ULTIMA sonda realtime: True = auto raggiungibile dal cloud
         # (000000, c'è un frame), False = offline (A07900), None = sconosciuto. Usato dal
         # ciclo di poll per svegliare SOLO quando serve (auto che dorme davvero).
@@ -350,11 +349,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         sua finestra si chiuda) ed evita un re-OTP a sorpresa per inattività. Come
         bonus aggiorna le entità sessione. Non protegge dall'apertura dell'app
         ufficiale (sessione singola lato cloud → serve comunque OTP)."""
-        if self._keepalive_unsub is not None:
+        if self._timers.is_armed(KEEPALIVE):
             return
-        self._keepalive_unsub = async_track_time_interval(
+        self._timers.arm(KEEPALIVE, lambda: async_track_time_interval(
             self.hass, self._keepalive, timedelta(seconds=DEFAULT_SESSION_EVERY)
-        )
+        ))
 
     async def _keepalive(self, _now) -> None:
         try:
@@ -377,18 +376,19 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         if self.poll_normal_min <= 0 and self.poll_charging_min <= 0:
             _LOGGER.debug("[poll] disattivato (entrambi gli intervalli a 0)")
             return
-        if self._poll_unsub is None:
+        if not self._timers.is_armed(POLL):
             self._schedule_next_poll()
         # SEED iniziale: una lettura realtime ~15s dopo l'avvio (dato il tempo alla MQTT di
         # connettersi). Se l'auto è in carica/marcia (HV acceso) il follow-up ravvicinato a 2 min
         # parte SUBITO, senza attendere il primo poll periodico (fino a 30 min) — l'auto a riposo
         # NON manda MQTT, quindi senza questo seed dopo un riavvio in carica i sensori restavano
         # fermi finché non scattava il poll. Sola lettura: nessun comando all'auto. One-shot.
-        if self._startup_probe_unsub is None:
-            self._startup_probe_unsub = async_call_later(self.hass, 15, self._startup_probe_cb)
+        if not self._timers.is_armed(STARTUP_PROBE):
+            self._timers.arm(STARTUP_PROBE,
+                             lambda: async_call_later(self.hass, 15, self._startup_probe_cb))
 
     async def _startup_probe_cb(self, _now) -> None:
-        self._startup_probe_unsub = None
+        self._timers.cancel(STARTUP_PROBE)
         try:
             await self.async_probe(force=True)
         except Exception as err:  # noqa: BLE001 — il seed non deve far fallire l'avvio
@@ -402,36 +402,30 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             self.async_start_telemetry_poll()
             self.async_start_drive_watch()
         else:
-            if self._poll_unsub is not None:
-                self._poll_unsub()
-                self._poll_unsub = None
-            if self._drive_watch_unsub is not None:
-                self._drive_watch_unsub()
-                self._drive_watch_unsub = None
-            # P0-5: fermare anche il follow-up HV/ricarica, altrimenti con lo switch
-            # "Aggiornamento automatico" su OFF durante una carica il loop continuava a
-            # interrogare il cloud ogni pochi minuti (si auto-rischedula da solo).
-            if self._hv_poll_unsub is not None:
-                self._hv_poll_unsub()
-                self._hv_poll_unsub = None
+            # P0-5/P2-4: si spegne l'INTERO gruppo in un colpo solo. Prima i timer erano
+            # cancellati uno per uno e il follow-up HV/ricarica — quello a 2 minuti — era
+            # stato dimenticato: con lo switch su OFF durante una carica il loop continuava
+            # a interrogare il cloud per ore. Il keep-alive resta apposta: tiene viva la
+            # sessione senza mai contattare l'auto.
+            self._timers.cancel_many(GRUPPO_POLL)
             self._hv_poll_count = 0
 
     def async_start_drive_watch(self) -> None:
         """Avvia il battito di rilevamento marcia (sola lettura). È legato a `poll_enabled`
         (interruttore "Aggiornamento automatico"): ogni `DRIVE_WATCH_EVERY` controlla se l'HV è
         acceso e, in caso, fa partire il follow-up ravvicinato. Idempotente."""
-        if self._drive_watch_unsub is not None or not self.poll_enabled:
+        if self._timers.is_armed(DRIVE_WATCH) or not self.poll_enabled:
             return
-        self._drive_watch_unsub = async_track_time_interval(
+        self._timers.arm(DRIVE_WATCH, lambda: async_track_time_interval(
             self.hass, self._drive_watch_cb, timedelta(seconds=DRIVE_WATCH_EVERY)
-        )
+        ))
 
     async def _drive_watch_cb(self, _now) -> None:
         """Una lettura realtime di SOLA LETTURA per accorgersi che l'auto è in marcia (l'auto in
         movimento non manda push MQTT). Se il follow-up ravvicinato è già in corso (marcia/ricarica)
         o un ciclo di poll è in corso, salta: non si sovrappone. Se trova l'HV acceso, `async_probe`
         arma da sé il loop a 60s che seguirà tutto il viaggio. NESSUN comando/sveglia all'auto."""
-        if not self.poll_enabled or self._hv_poll_unsub is not None or self._poll_busy:
+        if not self.poll_enabled or self._timers.is_armed(HV_POLL) or self._poll_busy:
             return
         self._poll_busy = True
         try:
@@ -460,10 +454,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         if not mins or mins <= 0:
             # stato attuale off → recheck con l'altro intervallo (o 60 min) senza svegliare
             mins = self.poll_charging_min or self.poll_normal_min or 60
-        self._poll_unsub = async_call_later(self.hass, mins * 60, self._telemetry_poll_cb)
+        self._timers.arm(POLL, lambda: async_call_later(
+            self.hass, mins * 60, self._telemetry_poll_cb))
 
     async def _telemetry_poll_cb(self, _now) -> None:
-        self._poll_unsub = None
+        self._timers.cancel(POLL)
         try:
             mins = self.poll_charging_min if self._is_plugged() else self.poll_normal_min
             if mins and mins > 0 and not self._poll_busy:
@@ -571,28 +566,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         chiamato in executor da async_unload_entry. `disconnect()` PRIMA di
         `loop_stop()`: così il loop processa il CONNACK/DISCONNECT e il thread esce
         pulito senza un join che attende il keepalive."""
-        self._closing = True   # P0-4: da qui nessun timer può più essere ri-armato
+        # P0-4/P2-4: teardown UNICO. `close()` cancella tutti i timer e vieta ogni futuro
+        # `arm()`: una lettura già in volo che al ritorno provasse a ri-armare il follow-up
+        # non ci riesce più. Prima ogni timer si cancellava a mano qui, e bastava
+        # dimenticarne uno (o ri-armarlo altrove) per lasciare un poll orfano sul cloud.
+        self._timers.close()
         if self._diag_stop_unsub is not None:
             self._diag_stop_unsub()
             self._diag_stop_unsub = None
         # NB: `disarm=False` — l'unload non consuma la finestra del monitor, che riprende
         # al reload con la scadenza originale (calcolata sull'mtime della bandierina).
         self._diag_shutdown()
-        if self._keepalive_unsub is not None:
-            self._keepalive_unsub()
-            self._keepalive_unsub = None
-        if self._poll_unsub is not None:
-            self._poll_unsub()
-            self._poll_unsub = None
-        if self._hv_poll_unsub is not None:
-            self._hv_poll_unsub()
-            self._hv_poll_unsub = None
-        if self._startup_probe_unsub is not None:
-            self._startup_probe_unsub()
-            self._startup_probe_unsub = None
-        if self._drive_watch_unsub is not None:
-            self._drive_watch_unsub()
-            self._drive_watch_unsub = None
         if self._car is not None:
             try:
                 self._car.disconnect()
@@ -684,8 +668,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         plugged = field_on(fields_copy.get("chargeGunState"))
         # P0-5: rispetta lo switch "Aggiornamento automatico" (e lo stop) anche su questa
         # via d'ingresso, altrimenti un push MQTT ri-accendeva il follow-up a poll disattivato.
-        if (driving or plugged) and self._hv_poll_unsub is None and not is_confirmation \
-                and self.poll_enabled and not self._closing:
+        if (driving or plugged) and not self._timers.is_armed(HV_POLL) and not is_confirmation \
+                and self.poll_enabled and not self._timers.closing:
             self.hass.loop.call_soon_threadsafe(
                 lambda: self.hass.async_create_task(self.async_probe(force=True))
             )
@@ -952,29 +936,26 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             rilassato (`CHARGING_POLL_EVERY`) e cap molto più alto (`CHARGING_POLL_MAX`).
         Durante una ricarica l'HV è acceso, quindi il realtime ha batteria/corrente/tempo-residuo
         veri: è proprio questo che permette il refresh automatico mentre la spina è collegata."""
-        # P0-4/P0-5: il loop si auto-rischedula, quindi qui è l'UNICO punto in cui si può
-        # spezzare. Se l'integrazione si sta scaricando o l'utente ha spento l'aggiornamento
-        # automatico, si esce senza ri-armare (e si libera un eventuale timer residuo).
-        if self._closing or not self.poll_enabled:
-            # [diag] TIMER ORFANO osservato dal vivo: qualcuno ha provato a ri-armare il
-            # follow-up DOPO lo stop o a poll disattivato. Le guardie qui sotto lo
-            # impediscono; l'evento serve a sapere se la corsa accade davvero in campo.
+        # Il loop si auto-rischedula, quindi qui è l'UNICO punto in cui si può spezzare.
+        # P2-4: a registro chiuso `arm()` rifiuta da sé, quindi questa guardia non è più
+        # ciò che TIENE l'invariante — resta perché evita il giro a vuoto e, soprattutto,
+        # perché alimenta il contatore `hv_followup_orphan` del monitor diagnostico.
+        if self._timers.closing or not self.poll_enabled:
+            # [diag] TIMER ORFANO: qualcuno ha provato a ri-armare il follow-up DOPO lo
+            # stop o a poll disattivato. L'evento serve a sapere se la corsa accade
+            # davvero in campo, ora che le difese la impediscono.
             if self._diag is not None:
-                self._diag.record("hv_followup", orphan=True, closing=self._closing,
+                self._diag.record("hv_followup", orphan=True, closing=self._timers.closing,
                                   poll_enabled=self.poll_enabled,
-                                  had_timer=self._hv_poll_unsub is not None,
+                                  had_timer=self._timers.is_armed(HV_POLL),
                                   hv_count=self._hv_poll_count)
-            if self._hv_poll_unsub is not None:
-                self._hv_poll_unsub()
-                self._hv_poll_unsub = None
+            self._timers.cancel(HV_POLL)
             self._hv_poll_count = 0
             return
         if self._diag is not None:
             self._diag.record("hv_followup", orphan=False, plugged=self._is_plugged(),
                               hv_count=self._hv_poll_count)
-        if self._hv_poll_unsub is not None:
-            self._hv_poll_unsub()
-            self._hv_poll_unsub = None
+        self._timers.cancel(HV_POLL)
         plugged = self._is_plugged()
         # la spina ha priorità: cap/intervallo "da ricarica" (più lunghi) coprono anche l'HV acceso
         if plugged:
@@ -986,19 +967,20 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             return
         if self._hv_poll_count < cap:
             self._hv_poll_count += 1
-            self._hv_poll_unsub = async_call_later(self.hass, every, self._hv_followup_cb)
+            self._timers.arm(HV_POLL, lambda: async_call_later(
+                self.hass, every, self._hv_followup_cb))
         else:
             self._hv_poll_count = 0
 
     async def _hv_followup_cb(self, _now) -> None:
-        self._hv_poll_unsub = None
+        self._timers.cancel(HV_POLL)
         await self.async_probe(force=True)
 
     async def async_probe(self, force: bool = False) -> None:
         await self.hass.async_add_executor_job(self._probe, force)
         # se la lettura ha trovato l'HV acceso, segui la finestra di freschezza (auto-loop).
         # P0-4: se nel frattempo è arrivato lo stop, NON ri-armare (questa probe era già in volo).
-        if self._closing:
+        if self._timers.closing:
             return
         self._arm_hv_followup()
 
