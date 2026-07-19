@@ -149,3 +149,9 @@ MACRO_PRESET_S = 15 * 60 + 60
 # COMMAND_QUEUE_WAIT limita l'attesa in coda: oltre, il comando fallisce con un messaggio chiaro.
 COMMAND_SETTLE_S = 5
 COMMAND_QUEUE_WAIT = 30
+
+# Monitor diagnostico per lo SVILUPPATORE (vedi diag.py). Non è una funzione utente: non
+# ha interruttore nell'interfaccia. Si attiva creando il file bandierina qui sotto nella
+# config dir di HA (contenuto = giorni di durata) e si spegne da solo alla scadenza.
+# Senza il file il codice è dormiente: `_diag`/`DIAG_HOOK` restano None → costo nullo.
+DIAG_SWITCH_FILE = "omoda9_diag.on"

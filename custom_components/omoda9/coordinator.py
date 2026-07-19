@@ -37,7 +37,7 @@ from .const import (
     HV_ON_POLL_EVERY, HV_ON_POLL_MAX,
     CHARGING_POLL_EVERY, CHARGING_POLL_MAX, DRIVE_WATCH_EVERY,
     CONF_VEHICLE_NAME, DATA_VEHICLE_MODEL, DATA_VEHICLE_BRAND,
-    DEFAULTS,
+    DEFAULTS, DIAG_SWITCH_FILE,
 )
 
 # Cert minimi per il mutual-TLS MQTT (il .cer del server non serve a tls_set, come nel bridge).
@@ -208,6 +208,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                      # QUANTO è fresco il dato batteria/odometro mostrato (utile ad auto ferma).
                      "car_data_ts": None,
                      "realtime": None}
+        # Monitor diagnostico per lo SVILUPPATORE (diag.py): `None` = dormiente. Finché
+        # resta None ogni punto di aggancio è un solo `is not None` e non si alloca nulla
+        # — vale soprattutto per `_on_car_message`, che gira a ogni push dell'auto.
+        self._diag = None
+        self._diag_stop_unsub = None
+        self._mqtt_up_ts = 0.0   # istante dell'ultima connect MQTT (uptime nel monitor)
 
     # ───────────────── provisioning certificati mutual-TLS (FASE 3c) ─────────────────
     async def async_provision_certs(self) -> tuple[bool, str]:
@@ -269,7 +275,57 @@ class Omoda9Coordinator(DataUpdateCoordinator):
     # ───────────────── ciclo di vita MQTT auto ─────────────────
     async def async_start(self) -> None:
         """Avvia la connessione MQTT all'auto (paho gira in un thread proprio)."""
+        await self.async_setup_diag()
         await self.hass.async_add_executor_job(self._connect_car)
+
+    # ───────────────── monitor diagnostico (sviluppatore) ─────────────────
+    async def async_setup_diag(self) -> None:
+        """Accende il monitor se esiste la bandierina `omoda9_diag.on` nella config dir.
+
+        Nessun file → esce subito e tutto resta dormiente. Con il file, arma anche il
+        timer di auto-spegnimento: il monitor è pensato per restare acceso pochi giorni,
+        non deve poter essere dimenticato acceso (logger verboso + file su disco)."""
+        from .diag import DiagRecorder, read_switch
+        path = self.hass.config.path(DIAG_SWITCH_FILE)
+        until = await self.hass.async_add_executor_job(read_switch, path)
+        if until is None:
+            return
+        jsonl = self.hass.config.path(f"{DOMAIN}_{self.vin}_diag.jsonl")
+        self._diag = await self.hass.async_add_executor_job(
+            DiagRecorder, jsonl, self.vin, self.email, until
+        )
+        self._diag_stop_unsub = async_call_later(
+            self.hass, max(60.0, until - time.time()), self._diag_autostop_cb
+        )
+        _LOGGER.warning(
+            "[diag] monitor diagnostico ATTIVO fino al %s → %s (dati già oscurati; "
+            "rimuovi %s per spegnerlo prima)",
+            dt_util.as_local(dt_util.utc_from_timestamp(until)).isoformat(timespec="minutes"),
+            jsonl, path,
+        )
+
+    async def _diag_autostop_cb(self, _now) -> None:
+        self._diag_stop_unsub = None
+        # in executor: `close()` fa il join del thread scrittore e il disarmo tocca il
+        # filesystem — nessuno dei due deve girare sull'event loop.
+        await self.hass.async_add_executor_job(self._diag_shutdown, True)
+        _LOGGER.warning("[diag] monitor diagnostico terminato (scadenza raggiunta)")
+
+    def _diag_shutdown(self, disarm: bool = False) -> None:
+        """Spegne il monitor. `disarm=True` rinomina anche la bandierina (scadenza), così
+        non riparte al prossimo avvio; su unload la lascia com'è (l'utente ha ancora
+        giorni a disposizione e il monitor deve riprendere al reload)."""
+        rec, self._diag = self._diag, None
+        try:
+            import commands
+            commands.DIAG_HOOK = None
+        except Exception:  # noqa: BLE001 — core/ potrebbe non essere ancora importato
+            pass
+        if rec is not None:
+            rec.close()
+        if disarm:
+            from .diag import disarm_switch
+            disarm_switch(self.hass.config.path(DIAG_SWITCH_FILE))
 
     # ───────────────── keep-alive sessione (refresh token periodico) ─────────────────
     def async_start_keepalive(self) -> None:
@@ -467,10 +523,19 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                          rc, "connesso" if ok else "RIFIUTATO", topic if ok else "-")
             if ok:
                 cl.subscribe(topic, qos=1)
+            if self._diag is not None:
+                self._mqtt_up_ts = time.time()
+                self._diag.record("mqtt_conn", event="connect", rc=str(rc), ok=ok)
 
         def on_disconnect(cl, u, *a):
             self._update({"car_connected": False})
             _LOGGER.info("[auto] MQTT disconnesso")
+            if self._diag is not None:
+                # uptime della sessione appena caduta: sessioni cortissime = flapping.
+                up = round(time.time() - self._mqtt_up_ts, 1) if self._mqtt_up_ts else None
+                self._mqtt_up_ts = 0.0
+                rc = str(a[1]) if len(a) > 1 else (str(a[0]) if a else "?")
+                self._diag.record("mqtt_conn", event="disconnect", rc=rc, uptime_s=up)
 
         c.on_connect = on_connect
         c.on_disconnect = on_disconnect
@@ -494,6 +559,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         `loop_stop()`: così il loop processa il CONNACK/DISCONNECT e il thread esce
         pulito senza un join che attende il keepalive."""
         self._closing = True   # P0-4: da qui nessun timer può più essere ri-armato
+        if self._diag_stop_unsub is not None:
+            self._diag_stop_unsub()
+            self._diag_stop_unsub = None
+        # NB: `disarm=False` — l'unload non consuma la finestra del monitor, che riprende
+        # al reload con la scadenza originale (calcolata sull'mtime della bandierina).
+        self._diag_shutdown()
         if self._keepalive_unsub is not None:
             self._keepalive_unsub()
             self._keepalive_unsub = None
@@ -561,6 +632,14 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 if k != "time" and k not in CMD_CONFIRM_META:
                     self._fields[k] = str(v)
             fields_copy = dict(self._fields)
+
+        # [diag] auto-discovery: chiavi 5A02 che l'auto manda ma che META non mappa. È il
+        # canale per scoprire la telemetria ancora mancante (autonomia/TPMS). Fuori dal
+        # lock e solo a monitor acceso: il percorso caldo resta un `is not None`.
+        if self._diag is not None:
+            for k, v in data.items():
+                if k != "time" and k not in CMD_CONFIRM_META and k not in META:
+                    self._diag.note_unknown_field(k, v, svc)
 
         patch.update({"fields": fields_copy, "awake": True})
         if is_confirmation:
@@ -658,6 +737,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 commands.invalidate_taskid()
         commands.PIN = self.pin
         commands.TSP_HOST = self.tsp_host
+        # Monitor diagnostico: i moduli core/ non conoscono il coordinator, quindi il
+        # registratore passa da un callback module-level. `None` a monitor spento = costo
+        # nullo. Riassegnato qui a ogni bind, così segue l'auto-spegnimento.
+        commands.DIAG_HOOK = self._diag.record if self._diag is not None else None
         # MINT_TASKID dal valore d'ambiente (default 1 = i pulsanti coniano il proprio
         # taskId, fix S26) — rivalutato qui per non restare stale tra entry/reload.
         commands.MINT_TASKID = os.environ.get("OMODA_MINT_TASKID", "1") not in ("0", "", "false", "no")
@@ -695,10 +778,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             raise HomeAssistantError(
                 "L'auto è ancora impegnata coi comandi precedenti — riprova tra qualche istante."
             ) from err
+        t0 = time.monotonic()
         try:
             res = await self.hass.async_add_executor_job(self._send_command, key, params)
         except Exception as err:  # noqa: BLE001 — instrada il rimedio, poi RILANCIA
             self._cmd_gate.release()   # invio fallito → libera subito lo slot
+            if self._diag is not None:
+                self._diag.record("command", key=key, ok=False,
+                                  duration_ms=int((time.monotonic() - t0) * 1000),
+                                  reason=getattr(err, "reason", None),
+                                  code=getattr(err, "code", None),
+                                  err_type=type(err).__name__, msg=str(err))
             # Routing per CAUSA (CommandError.reason), non solo per codice:
             #   reason="reauth" → riautenticazione nativa HA (nuovo OTP: sessione/token morti)
             #   reason="pin"    → Repair issue fixabile che apre la riconfig del PIN comandi
@@ -710,6 +800,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             elif reason == "pin":
                 self._raise_pin_issue(str(err))
             raise
+        if self._diag is not None:
+            self._diag.record("command", key=key, ok=True,
+                              duration_ms=int((time.monotonic() - t0) * 1000), result=res)
         # comando riuscito → un eventuale avviso "PIN errato" non ha più ragione d'essere
         self._clear_pin_issue()
 
@@ -850,11 +943,22 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # spezzare. Se l'integrazione si sta scaricando o l'utente ha spento l'aggiornamento
         # automatico, si esce senza ri-armare (e si libera un eventuale timer residuo).
         if self._closing or not self.poll_enabled:
+            # [diag] TIMER ORFANO osservato dal vivo: qualcuno ha provato a ri-armare il
+            # follow-up DOPO lo stop o a poll disattivato. Le guardie qui sotto lo
+            # impediscono; l'evento serve a sapere se la corsa accade davvero in campo.
+            if self._diag is not None:
+                self._diag.record("hv_followup", orphan=True, closing=self._closing,
+                                  poll_enabled=self.poll_enabled,
+                                  had_timer=self._hv_poll_unsub is not None,
+                                  hv_count=self._hv_poll_count)
             if self._hv_poll_unsub is not None:
                 self._hv_poll_unsub()
                 self._hv_poll_unsub = None
             self._hv_poll_count = 0
             return
+        if self._diag is not None:
+            self._diag.record("hv_followup", orphan=False, plugged=self._is_plugged(),
+                              hv_count=self._hv_poll_count)
         if self._hv_poll_unsub is not None:
             self._hv_poll_unsub()
             self._hv_poll_unsub = None
@@ -1041,6 +1145,12 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # tradurlo) per non aprire più la card «Riautentica». Solo EXPIRED = token morto; un
         # NET_ERROR è transitorio e NON deve far rifare un OTP inutile all'utente.
         # HA deduplica: se una reauth è già in corso non ne apre un'altra.
+        if self._diag is not None:
+            # `status` è il marcatore stabile, `detail` il testo umano: registrarli
+            # entrambi fa vedere subito un eventuale disallineamento fra i due (una
+            # sessione KO che NON apre la reauth, o viceversa).
+            self._diag.record("session", ok=ok, status=status, detail=detail,
+                              triggered_reauth=(status == SESSION_STATUS_EXPIRED))
         if status == SESSION_STATUS_EXPIRED:
             self.entry.async_start_reauth(self.hass)
         return ok, detail

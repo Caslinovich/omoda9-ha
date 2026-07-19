@@ -121,4 +121,13 @@ async def async_get_config_entry_diagnostics(
             "fields": fields,
         },
     }
+
+    # Monitor diagnostico (diag.py), presente solo se attivo: ring buffer + contatori.
+    # Gli eventi sono GIÀ redatti alla cattura; qui passano comunque dalla redazione
+    # standard — difesa in profondità, come per realtime/fields sopra.
+    recorder = getattr(coordinator, "_diag", None)
+    if recorder is not None:
+        snap = recorder.snapshot()
+        diag["diagnostic_mode"] = _scrub_vin(async_redact_data(snap, TO_REDACT), vin)
+
     return diag

@@ -279,6 +279,15 @@ _PIN_FAIL = {"n": 0, "ts": 0.0}
 # mandano 2 checkPassword con lo stesso PIN errato, avvicinando il lockout account.
 # Il lock copre TUTTO `_mint_taskid` (guardia → POST → increment/reset) e `reset_pin_lockout`.
 _MINT_LOCK = threading.Lock()
+# Monitor diagnostico (diag.py): callback module-level impostato dal coordinator SOLO a
+# monitor acceso — `core/` non conosce il coordinator e non deve importarlo. A `None`
+# (default) il codice è dormiente e non costa nulla.
+DIAG_HOOK = None
+# Conii SOVRAPPOSTI: contatore d'ingresso tenuto FUORI da `_MINT_LOCK`, altrimenti
+# vedrebbe sempre 1 (il lock serializza). Se all'ingresso risulta >1, un secondo thread
+# sta aspettando il lock proprio ora: è la corsa P0-1 osservata dal vivo.
+_MINT_INFLIGHT = {"n": 0}
+_MINT_INFLIGHT_LOCK = threading.Lock()
 _PIN_FAIL_MAX = int(os.environ.get("OMODA_PIN_FAIL_MAX", "2"))
 _PIN_FAIL_WINDOW = int(os.environ.get("OMODA_PIN_FAIL_WINDOW", "600"))
 # P1-2 — classificazione di checkPassword PER CODICE (prima: «tutto ciò che non dà un taskId
@@ -313,6 +322,49 @@ def reset_pin_lockout() -> None:
 
 
 def _mint_taskid(tuid):
+    """Conia un taskId. A monitor spento è un passacarte diretto a `_mint_taskid_impl`.
+
+    A monitor acceso osserva DUE cose che dal log non si vedono: i conii concorrenti
+    (`pin_fail_concurrent`, la corsa che avvicina il lockout dell'account) e l'esito reale
+    di checkPassword con il codice GREZZO del backend — l'unico modo per distinguere un
+    PIN davvero errato da un rifiuto per permessi/parametri. Il PIN non viene mai
+    registrato, in nessuna forma."""
+    if DIAG_HOOK is None:
+        return _mint_taskid_impl(tuid)
+    with _MINT_INFLIGHT_LOCK:
+        _MINT_INFLIGHT["n"] += 1
+        inflight = _MINT_INFLIGHT["n"]
+    if inflight > 1:
+        DIAG_HOOK("pin_fail_concurrent", inflight=inflight)
+    try:
+        tid = _mint_taskid_impl(tuid)
+        DIAG_HOOK("pin_event", outcome="ok", pin_fail_n=_PIN_FAIL["n"])
+        return tid
+    except CommandError as err:
+        # "fail" = il backend ha risposto e ha rifiutato; "empty" = PIN non configurato;
+        # "blocked" = anti-lockout scattato. Gli ultimi due NON hanno interrogato il
+        # backend: distinguerli conta, perché solo "fail" avvicina il lockout dell'account.
+        # Si classifica sul marcatore nel messaggio, non sulla presenza del codice: un
+        # rifiuto può arrivare anche senza codice, e finirebbe scambiato per un blocco.
+        code = getattr(err, "code", None)
+        if "checkPassword" in str(err):
+            outcome = "fail"
+        elif not (PIN or "").strip():
+            outcome = "empty"
+        else:
+            outcome = "blocked"
+        DIAG_HOOK("pin_event", outcome=outcome, reason=getattr(err, "reason", None), cp_code=code,
+                  pin_fail_n=_PIN_FAIL["n"], pin_fail_max=_PIN_FAIL_MAX)
+        raise
+    except Exception as err:  # noqa: BLE001 — il monitor osserva, non altera il flusso
+        DIAG_HOOK("pin_event", outcome="error", err_type=type(err).__name__)
+        raise
+    finally:
+        with _MINT_INFLIGHT_LOCK:
+            _MINT_INFLIGHT["n"] -= 1
+
+
+def _mint_taskid_impl(tuid):
     """Conia un taskId con la catena BFF dell'app (queryList→setVecDefault→checkPassword).
        FIX S26 (2026-06-20): scene=0 (NON 2) → il taskId coniato è benedetto da tspconsole
        (airControl A00079). scene=2 dava A00089; scene=1 A00089; scene>=3 A00546. Obiettivo #1 RISOLTO.
@@ -394,7 +446,7 @@ def _mint_taskid(tuid):
         raise CommandError(
             f"PIN comandi rifiutato dal backend [checkPassword {detail}] — riconfiguralo nelle "
             "impostazioni dell'integrazione",
-            reason="pin")
+            code=str(code) if code else None, reason="pin")
 
 
 # Cache in memoria del taskId. Coniarlo significa fare tutto il giro di checkPassword (PIN):

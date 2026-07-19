@@ -4,6 +4,11 @@ certs_eu/
 omoda9.env
 token.json
 .mqtt_cred
+# monitor diagnostico: nasce già redatto, ma è materiale di campo → mai nel repo
+*_diag.jsonl
+*_diag.jsonl.1
+omoda9_diag.on
+omoda9_diag.off
 
 # --- runtime / dati locali ---
 data/
