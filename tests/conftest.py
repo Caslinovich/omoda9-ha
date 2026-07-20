@@ -19,7 +19,6 @@ import pathlib
 import sys
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, ".."))
@@ -144,14 +143,22 @@ async def integrazione_avviata(hass, config_entry, cloud, monkeypatch):
     monkeypatch.setattr(Omoda9Coordinator, "async_start_telemetry_poll", lambda self: None)
     monkeypatch.setattr(Omoda9Coordinator, "async_start_drive_watch", lambda self: None)
 
+    # Backfill dell'identita' veicolo: e' un task in BACKGROUND avviato da
+    # async_setup_entry che fa una queryList in rete e poi chiama async_update_entry
+    # (coordinator.py) -> l'update listener ricarica l'entry appena avviata. In un test
+    # quel reload resta in volo mentre la fixture smonta hass: l'entry finisce in
+    # UNLOAD_IN_PROGRESS e il teardown esplode (flakiness ~83% delle esecuzioni su
+    # HA recente). E' l'ultimo percorso di I/O esterno rimasto scoperto qui.
+    async def _niente_backfill(self) -> None:
+        return None
+
+    monkeypatch.setattr(Omoda9Coordinator, "async_ensure_vehicle_identity",
+                        _niente_backfill)
+
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     yield config_entry
-    # `state` è un ConfigEntryState, quindi NON è mai None: la vecchia guardia
-    # `is not None` era sempre vera e il teardown tentava l'unload anche su un'entry
-    # già scaricata o in UNLOAD_IN_PROGRESS → OperationNotAllowed (visto in CI su
-    # HA recente/py3.13). Si scarica solo ciò che è davvero caricato.
-    if config_entry.state is ConfigEntryState.LOADED:
+    if config_entry.state is not None:
         await hass.config_entries.async_unload(config_entry.entry_id)
         await hass.async_block_till_done()
 
