@@ -6,6 +6,27 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **Avvio più pulito e spegnimento più rapido di Home Assistant.** All'avvio
+  l'integrazione si caricava e, subito dopo, si ricaricava una seconda volta da sola:
+  succedeva mentre andava a recuperare il nome della tua auto. Un lavoro inutile, che in
+  più poteva **rallentare lo spegnimento o il riavvio di Home Assistant** se capitava
+  nel momento sbagliato. Ora l'integrazione si ricarica **solo quando serve davvero**,
+  cioè quando cambi tu le impostazioni.
+- Anche cambiando il PIN dei comandi l'integrazione si ricaricava due volte di fila:
+  ora una sola. Non cambia nulla in ciò che vedi, è tutto più ordinato e veloce.
+
+### 🇬🇧 English
+
+- **Cleaner startup and faster Home Assistant shutdown.** At startup the integration
+  loaded and then immediately reloaded itself a second time, while fetching your car's
+  name. That was wasted work, and it could also **slow down Home Assistant's shutdown or
+  restart** if it happened at the wrong moment. The integration now reloads **only when
+  it actually needs to**, that is when you change the settings yourself.
+- Changing the command PIN also caused two reloads in a row: now just one. Nothing
+  changes in what you see, it is simply tidier and faster.
+
 ## v1.6.0 — 2026-07-20
 
 ### 🇮🇹 Italiano

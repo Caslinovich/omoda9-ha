@@ -173,6 +173,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         opt = entry.options or {}
         self.poll_normal_min = int(opt.get(CONF_POLL_NORMAL, DEFAULT_POLL_NORMAL_MIN))
         self.poll_charging_min = int(opt.get(CONF_POLL_CHARGING, DEFAULT_POLL_CHARGING_MIN))
+        # Fotografia delle opzioni applicate da QUESTA istanza: l'update listener la
+        # confronta con quelle correnti per capire se un aggiornamento dell'entry ha
+        # davvero toccato le opzioni (→ serve un reload) oppure solo `entry.data`
+        # (→ nessun reload). Vedi `_async_options_updated` in __init__.py.
+        self.applied_options = dict(opt)
         self._poll_busy = False       # evita sovrapposizioni tra cicli
         # follow-up "alta tensione accesa": quando l'HV è on (marcia/ricarica) la telemetria
         # realtime è VERA → rileggiamo a raffica per catturare odometro/SOC che salgono, poi

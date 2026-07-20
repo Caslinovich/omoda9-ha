@@ -77,8 +77,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Opzioni cambiate → ricarica l'entry per riapplicare gli intervalli di poll."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Ricarica l'entry SOLO se sono cambiate davvero le opzioni.
+
+    `add_update_listener` scatta a ogni `async_update_entry`, anche quando a cambiare è
+    `entry.data` e non le opzioni. Due conseguenze, entrambe reali:
+
+    * il backfill dell'identità veicolo (task in background avviato dal setup) scrive in
+      `entry.data` → l'entry appena avviata veniva **subito ricaricata**. Al primo avvio
+      HA la caricava due volte, e se lo spegnimento arrivava mentre il reload era in volo
+      il task restava appeso oltre la fase di chiusura (HA lo segnala: «Integrations
+      should cancel non-critical tasks … to prevent delaying shutdown») lasciando l'entry
+      in UNLOAD_IN_PROGRESS;
+    * i percorsi che cambiano il PIN (Repair e riconfigura) si ricaricano **già da soli**
+      in modo esplicito → il listener aggiungeva un secondo reload inutile.
+
+    Chi ha davvero bisogno del reload è solo l'options flow (intervalli di poll, override
+    del nome), che non ricarica per conto suo. Si confronta quindi con la fotografia delle
+    opzioni applicate dal coordinator vivo. Se il coordinator non c'è (entry non ancora in
+    `hass.data`) si ricarica, che è il comportamento prudente di prima.
+
+    Si usa `async_schedule_reload` invece di attendere `async_reload`: il listener non
+    resta appeso ad attendere il reload di se stesso, ed è HA a possedere e cancellare il
+    task allo spegnimento.
+    """
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is not None and dict(entry.options or {}) == coordinator.applied_options:
+        return
+    hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

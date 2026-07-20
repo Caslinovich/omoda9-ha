@@ -134,3 +134,55 @@ async def test_unload_smonta_tutto(hass, integrazione_avviata):
 # NB: la verifica «PIN ed email non finiscono nell'ambiente del processo» si è spostata
 # in `test_context.py`, dove ha una forma più forte: dopo P2-6 non ci finiscono MAI, quindi
 # non c'è nulla da ripulire all'unload — una garanzia che non dipende dall'unload.
+
+
+# ─────────────────── reload dell'entry: solo per le opzioni ───────────────────
+# `add_update_listener` scatta a OGNI async_update_entry, anche quando cambia solo
+# `entry.data`. Prima l'entry veniva ricaricata anche dal backfill dell'identità
+# veicolo (task in background del setup) e dai percorsi PIN, che però si ricaricano
+# già da soli: reload doppi, e uno di essi restava appeso allo spegnimento di HA.
+
+def _spia_reload(hass, monkeypatch) -> list[str]:
+    """Registra OGNI reload dell'entry, con qualunque API sia richiesto.
+
+    Spiare solo `async_schedule_reload` renderebbe il test inutile: il codice
+    difettoso usava `async_reload`, quindi la spia non vedeva nulla e l'asserzione
+    "nessun reload" passava per caso anche col bug presente.
+    """
+    chiamate: list[str] = []
+    monkeypatch.setattr(hass.config_entries, "async_schedule_reload",
+                        lambda entry_id: chiamate.append(entry_id))
+
+    async def _reload(entry_id: str) -> bool:
+        chiamate.append(entry_id)
+        return True
+
+    monkeypatch.setattr(hass.config_entries, "async_reload", _reload)
+    return chiamate
+
+
+async def test_un_aggiornamento_dei_soli_dati_non_ricarica_l_entry(
+        hass, integrazione_avviata, monkeypatch):
+    """Scrivere in `entry.data` (es. backfill nome veicolo) NON deve ricaricare."""
+    chiamate = _spia_reload(hass, monkeypatch)
+
+    hass.config_entries.async_update_entry(
+        integrazione_avviata,
+        data={**integrazione_avviata.data, "vehicle_name": "Auto di prova"})
+    await hass.async_block_till_done()
+
+    assert chiamate == [], "un aggiornamento dei soli dati ha ricaricato l'entry"
+
+
+async def test_un_cambio_di_opzioni_ricarica_l_entry(
+        hass, integrazione_avviata, monkeypatch):
+    """Le opzioni (intervalli di poll) si applicano al setup → il reload serve davvero."""
+    chiamate = _spia_reload(hass, monkeypatch)
+
+    hass.config_entries.async_update_entry(
+        integrazione_avviata,
+        options={**dict(integrazione_avviata.options or {}), "poll_normal_min": 45})
+    await hass.async_block_till_done()
+
+    assert chiamate == [integrazione_avviata.entry_id], \
+        "un cambio di opzioni non ha ricaricato l'entry"
