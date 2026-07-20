@@ -22,3 +22,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
+
+  tests:
+    name: Suite di test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Home Assistant recente richiede Python 3.13+. È anche il motivo per cui la
+      # suite NON gira sull'host di sviluppo (fermo a 3.11): la CI è l'unico posto
+      # dove i test valgono davvero come gate.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Installa le dipendenze di test
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_test.txt
+
+      # I test NON toccano la rete: conftest.py installa una fixture `no_network`
+      # autouse che fa fallire qualunque socket reale. Nessun segreto, nessun token
+      # e nessuna credenziale servono a questo job — le fixture sono sintetiche.
+      - name: Esegui la suite
+        run: pytest tests/ -q

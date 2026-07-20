@@ -1,0 +1,17 @@
+# Dipendenze della suite di test (CI GitHub Actions + sviluppo locale).
+# NON è un requirement del componente: gli utenti non lo scaricano mai — lo zip
+# pubblicato su HACS contiene solo custom_components/omoda9/ (vedi release.sh).
+#
+# `pytest-homeassistant-custom-component` tira dentro Home Assistant e l'intero
+# stack pytest già configurato per le integrazioni custom. Volutamente NON pinnato:
+# così la CI prova sempre l'HA più recente e un'incompatibilità futura emerge qui
+# invece che sull'installazione di un utente.
+pytest-homeassistant-custom-component
+
+# Requisiti runtime del componente, allineati a manifest.json: servono perché i test
+# importano davvero i moduli di core/ (firma, MQTT, HTTP).
+paho-mqtt>=2.0
+requests>=2.28
+pycryptodome>=3.17
+numpy>=1.21
+pillow>=9.0
