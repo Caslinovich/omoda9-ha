@@ -36,6 +36,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          # Senza questo, setup-python cerca `requirements.txt`/`pyproject.toml`, non
+          # li trova e fallisce l'intero job prima ancora di installare le dipendenze.
+          cache-dependency-path: requirements_test.txt
 
       - name: Installa le dipendenze di test
         run: |
