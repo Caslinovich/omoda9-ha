@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.6.1 — 2026-07-20
+
 ### 🇮🇹 Italiano
 
 - **Avvio più pulito e spegnimento più rapido di Home Assistant.** All'avvio
