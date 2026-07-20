@@ -19,6 +19,7 @@ import pathlib
 import sys
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, ".."))
@@ -146,7 +147,11 @@ async def integrazione_avviata(hass, config_entry, cloud, monkeypatch):
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     yield config_entry
-    if config_entry.state is not None:
+    # `state` è un ConfigEntryState, quindi NON è mai None: la vecchia guardia
+    # `is not None` era sempre vera e il teardown tentava l'unload anche su un'entry
+    # già scaricata o in UNLOAD_IN_PROGRESS → OperationNotAllowed (visto in CI su
+    # HA recente/py3.13). Si scarica solo ciò che è davvero caricato.
+    if config_entry.state is ConfigEntryState.LOADED:
         await hass.config_entries.async_unload(config_entry.entry_id)
         await hass.async_block_till_done()
 
