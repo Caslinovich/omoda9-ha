@@ -103,6 +103,14 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b\d{15,}\b"), "**NUM**"),          # tUserId & affini (id numerici lunghi)
     (re.compile(r"\b[0-9a-fA-F]{32,}\b"), "**HEX**"),  # token/hash/SM4
     (re.compile(r"/config/omoda9_\S*"), "**PATH**"),   # path per-VIN nella config dir
+    # COORDINATA GEOGRAFICA in un campo dal nome qualsiasi. `DROP_KEYS` toglie la
+    # posizione quando la si riconosce dal NOME della chiave; questo pattern la prende
+    # anche quando il nome non dice nulla — è il caso che ha causato la fuga vista in
+    # campo il 2026-07-20, dove una coordinata era finita sotto la chiave `sample`.
+    # Volutamente stretto: parte intera di 1-3 cifre e ALMENO 4 decimali. Non tocca i
+    # valori di telemetria reali (temperature "21.0", tensioni "384", percentuali "72")
+    # né i timestamp epoch, che hanno la parte intera ben più lunga di 3 cifre.
+    (re.compile(r"-?\b\d{1,3}\.\d{4,}\b"), "**GEO**"),
 ]
 
 
@@ -294,13 +302,25 @@ class DiagRecorder:
 
         Emette l'evento SOLO la prima volta che vede una chiave (altrimenti ogni push
         dell'auto ne genererebbe uno) ma incrementa il contatore sempre: è il conteggio a
-        dire se il campo è stabile e vale la pena mapparlo."""
+        dire se il campo è stabile e vale la pena mapparlo.
+
+        ⚠️ Il `sample` è il punto più delicato del monitor: è l'unico posto in cui un
+        valore dell'auto viene registrato **sotto un nome di chiave che non è il suo**
+        (`sample`). La redazione per chiave non può quindi proteggerlo — e infatti il
+        2026-07-20 una coordinata GPS è finita in chiaro nel file proprio da qui. Il
+        valore passa ora da `redact()` come tutto il resto (che dalla stessa data
+        riconosce anche le coordinate), e per le chiavi geografiche il campione non
+        viene proprio registrato: per capire se un campo vale un sensore basta il NOME."""
         with self._lock:
             first = key not in self._seen_unknown
             self._seen_unknown.add(key)
             if not first:
                 self._unknown[key] += 1
                 return
+        if str(key).lower() in DROP_KEYS:
+            # posizione: il nome della chiave basta, il valore non serve a nulla
+            self.record("unknown_field", key=key, sample="**GEO**", svc=svc)
+            return
         self.record("unknown_field", key=key, sample=str(value)[:80], svc=svc)
 
     # ---------- lettura ----------

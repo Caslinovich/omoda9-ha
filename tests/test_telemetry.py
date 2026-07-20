@@ -117,6 +117,40 @@ async def test_payload_illeggibile_non_rompe_nulla(hass, integrazione_avviata):
     assert coord.data is not None
 
 
+async def test_la_posizione_non_genera_campi_sconosciuti(hass, integrazione_avviata):
+    """Regressione del 2026-07-20, lato coordinator.
+
+    La ricerca dei campi non mappati confronta le chiavi con `META`, che descrive la
+    telemetria di STATO (5A02). Girava però su OGNI messaggio: su un push di posizione
+    (1301) segnalava quindi `lat`/`lon` come "campi da mappare" — falso, sono già
+    gestiti — e nel farlo ne registrava il VALORE come campione, mandando le coordinate
+    dell'auto nel file diagnostico."""
+    coord = _coordinator(hass, integrazione_avviata)
+
+    visti: list[tuple] = []
+
+    class FintoMonitor:
+        def note_unknown_field(self, key, value, svc):
+            visti.append((key, value, svc))
+
+        def record(self, *a, **kw):
+            pass
+
+    coord._diag = FintoMonitor()
+    try:
+        await _consegna(hass, coord, FX.position_1301(lat=40.906483, lon=14.351322))
+        assert visti == [], f"la posizione ha generato campi sconosciuti: {visti}"
+
+        # un 5A02 con un campo davvero nuovo DEVE invece essere segnalato: è la
+        # funzione che serve a scoprire autonomia/pressione gomme.
+        await _consegna(hass, coord, FX.telemetry_5a02(rangeKm="215"))
+        assert any(k == "rangeKm" for k, _v, _s in visti), \
+            "un campo davvero nuovo del 5A02 non è stato segnalato"
+        assert not any(k in ("lat", "lon") for k, _v, _s in visti)
+    finally:
+        coord._diag = None
+
+
 async def test_serratura_zero_e_bloccata(hass, integrazione_avviata):
     """Convenzione verificata dal vivo (2026-06-17): doorLock 0 = Bloccata, 1 = Sbloccata.
 

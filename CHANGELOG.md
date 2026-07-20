@@ -16,6 +16,12 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
   cioè quando cambi tu le impostazioni.
 - Anche cambiando il PIN dei comandi l'integrazione si ricaricava due volte di fila:
   ora una sola. Non cambia nulla in ciò che vedi, è tutto più ordinato e veloce.
+- **Corretto un difetto negli strumenti interni di diagnostica**, quelli che chi sviluppa
+  l'integrazione può accendere per indagare un problema segnalato. In certi casi il file
+  che producono poteva contenere la **posizione dell'auto** invece di ometterla come
+  previsto. Quegli strumenti restano spenti a meno che non vengano attivati apposta,
+  quindi con ogni probabilità non ti ha mai riguardato — ma se ti fosse mai stato chiesto
+  di inviare un file di diagnostica, da questa versione è di nuovo oscurato come promesso.
 
 ### 🇬🇧 English
 
@@ -26,6 +32,12 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
   it actually needs to**, that is when you change the settings yourself.
 - Changing the command PIN also caused two reloads in a row: now just one. Nothing
   changes in what you see, it is simply tidier and faster.
+- **Fixed a defect in the internal diagnostic tooling** — the tooling the integration's
+  developer can switch on to investigate a reported problem. In some cases the file it
+  produces could contain the **car's location** instead of omitting it as intended. That
+  tooling stays switched off unless deliberately enabled, so in all likelihood this never
+  affected you — but if you were ever asked to send a diagnostic file, from this version
+  it is properly redacted again, as promised.
 
 ## v1.6.0 — 2026-07-20
 

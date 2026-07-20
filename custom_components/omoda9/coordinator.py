@@ -634,9 +634,17 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         # [diag] auto-discovery: chiavi 5A02 che l'auto manda ma che META non mappa. È il
         # canale per scoprire la telemetria ancora mancante (autonomia/TPMS). Fuori dal
         # lock e solo a monitor acceso: il percorso caldo resta un `is not None`.
-        if self._diag is not None:
+        #
+        # Solo il 5A02: `META` descrive la telemetria di STATO, quindi confrontare con
+        # essa i campi di un push di POSIZIONE (1301) segnalava `lat`/`lon` come "campi
+        # non mappati" — falsi positivi, perché sono già gestiti dal ramo posizione e
+        # alimentano il device_tracker. Peggio: così una coordinata finiva registrata
+        # come campione (fuga vista in campo il 2026-07-20). `GEO_KEYS` resta escluso
+        # comunque, nel caso l'auto infilasse la posizione dentro un 5A02.
+        if self._diag is not None and svc == "5A02":
             for k, v in data.items():
-                if k != "time" and k not in CMD_CONFIRM_META and k not in META:
+                if (k != "time" and k not in CMD_CONFIRM_META and k not in META
+                        and k not in GEO_KEYS):
                     self._diag.note_unknown_field(k, v, svc)
 
         patch.update({"fields": fields_copy, "awake": True})

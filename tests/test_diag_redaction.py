@@ -120,6 +120,50 @@ def test_recorder_buffer_and_file_are_redacted():
         rec.close()
 
 
+def test_coordinate_redatte_anche_sotto_una_chiave_qualsiasi():
+    """Regressione del 2026-07-20 — la fuga vera, trovata analizzando il file di campo.
+
+    `DROP_KEYS` toglie la posizione riconoscendola dal NOME della chiave. Ma il monitor
+    registra il valore di un campo sconosciuto sotto la chiave `sample`: lì la deny-list
+    non arriva, e le coordinate dell'auto sono finite in chiaro in un file che è
+    documentato come «sicuro da allegare a una segnalazione».
+
+    Non basta quindi coprire i nomi noti: una coordinata va riconosciuta **dalla forma**,
+    ovunque si trovi."""
+    out = diag.redact({"sample": "40.906483", "altro": "14.351322",
+                       "annidato": {"x": "-7.68251"}}, extra=())
+    blob = json.dumps(out)
+    for pezzo in ("40.906483", "14.351322", "-7.68251"):
+        assert pezzo not in blob, f"coordinata trapelata sotto chiave non-geo: {pezzo}"
+
+
+def test_la_redazione_geo_non_mangia_la_telemetria_vera():
+    """Il rovescio: il pattern dev'essere STRETTO. Se oscurasse temperature, tensioni o
+    percentuali, il monitor perderebbe proprio i dati per cui esiste."""
+    valori = {"temperatura": "21.0", "tensione": "384", "batteria": "72",
+              "corrente": "-1000", "consumo": "17.5", "epoch_ms": "1721390000000",
+              "odometro": "12420"}
+    out = diag.redact(valori, extra=())
+    for k, v in valori.items():
+        assert out[k] == v, f"valore di telemetria legittimo oscurato: {k}={v} → {out[k]}"
+
+
+def test_campo_sconosciuto_geo_non_registra_il_campione():
+    """Per capire se un campo merita un sensore basta il NOME. Il valore di una chiave
+    geografica non aggiunge nulla e può solo far danni."""
+    rec = _recorder()
+    try:
+        rec.note_unknown_field("lat", 40.906483, "1301")
+        rec.note_unknown_field("posizioneStrana", "45.070312", "5A02")
+        blob = json.dumps(rec.snapshot())
+        assert "40.906483" not in blob
+        assert "45.070312" not in blob, "coordinata trapelata da un campo dal nome ignoto"
+        # il nome della chiave però deve restare: è l'informazione utile
+        assert "posizioneStrana" in blob
+    finally:
+        rec.close()
+
+
 def test_counters_and_unknown_fields():
     """I contatori aggregati sono la sintesi che fa vedere il problema senza leggere
     500 eventi; `unknown_field` si emette una volta sola per chiave ma conta sempre."""
