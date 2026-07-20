@@ -6,6 +6,37 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+### 🇮🇹 Italiano
+
+- **La posizione dell'auto non compare più dove non deve.** Un messaggio di stato interno
+  scriveva le coordinate della macchina nel proprio testo, e quel messaggio finiva in tre
+  posti: nello storico dei dati di Home Assistant, nel file di «Scarica diagnostica» (quello
+  che puoi allegare a una segnalazione) e nel registro tecnico. Ora le coordinate vengono
+  tolte alla fonte: continuano ad alimentare la mappa dell'auto — che è il loro posto
+  giusto — ma spariscono da quel messaggio. Tutti gli altri dati (chilometri, batteria,
+  autonomia, temperatura) restano visibili come prima. **Se in passato hai inviato un file
+  di diagnostica**, può aver contenuto la posizione dell'auto in quel momento: da questa
+  versione non succede più.
+- **«Tempo di ricarica residuo» ora torna a "sconosciuto" quando l'auto non è in carica.**
+  Prima restava inchiodato all'ultimo valore (es. 120 minuti) anche a ricarica finita e
+  spina staccata, il che era fuorviante.
+- Nessuna funzione nuova e nessuna differenza nell'uso quotidiano: solo correzioni.
+
+### 🇬🇧 English
+
+- **The car's location no longer shows up where it shouldn't.** An internal status message
+  wrote the car's coordinates into its own text, and that message ended up in three places:
+  Home Assistant's data history, the «Download diagnostics» file (the one you can attach to
+  a report), and the technical log. The coordinates are now removed at the source: they
+  still feed the car's map — which is where they belong — but they disappear from that
+  message. Every other value (mileage, battery, range, temperature) stays visible as before.
+  **If you sent a diagnostics file in the past**, it may have contained the car's location
+  at that moment: from this version it no longer does.
+- **«Remaining charge time» now returns to "unknown" when the car isn't charging.** It used
+  to stay stuck on the last value (e.g. 120 minutes) even after charging ended and the plug
+  was removed, which was misleading.
+- No new features and no difference in day-to-day use: fixes only.
+
 ## v1.6.1 — 2026-07-20
 
 ### 🇮🇹 Italiano

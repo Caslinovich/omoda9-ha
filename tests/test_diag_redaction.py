@@ -137,6 +137,17 @@ def test_coordinate_redatte_anche_sotto_una_chiave_qualsiasi():
         assert pezzo not in blob, f"coordinata trapelata sotto chiave non-geo: {pezzo}"
 
 
+def test_la_redazione_geo_non_corrompe_i_timestamp():
+    """Difetto trovato durante lo sviluppo: la prima versione del pattern coordinate
+    mangiava i secondi.microsecondi dei timestamp ISO (`…:07.428912`), rovinando
+    `last_seen`/`last_pos_fix` nella diagnostica. Il timestamp deve restare intatto,
+    la coordinata accanto deve invece sparire."""
+    testo = "auto vista a 40.904308,14.349437 alle 2026-07-20T11:57:07.428912+00:00"
+    out = diag.scrub_coordinates(testo)
+    assert "2026-07-20T11:57:07.428912+00:00" in out, "timestamp corrotto dalla redazione"
+    assert "40.904308" not in out and "14.349437" not in out, "coordinata non redatta"
+
+
 def test_la_redazione_geo_non_mangia_la_telemetria_vera():
     """Il rovescio: il pattern dev'essere STRETTO. Se oscurasse temperature, tensioni o
     percentuali, il monitor perderebbe proprio i dati per cui esiste."""

@@ -47,6 +47,30 @@ def _scrub_vin(obj: Any, vin: str) -> Any:
     return obj
 
 
+def _scrub_geo(obj: Any) -> Any:
+    """Toglie le coordinate ovunque compaiano DENTRO UNA STRINGA (2026-07-20).
+
+    `TO_REDACT` copre `lat`/`lon` quando sono chiavi di un dizionario. Non copriva però
+    il caso reale trovato sul campo: `probe_status` è un messaggio discorsivo destinato
+    all'utente e conteneva «lat=40.90…, lon=14.34…» — le coordinate della macchina
+    finivano quindi in chiaro proprio nel file che l'intestazione di questo modulo
+    promette essere «sicuro da inviare».
+
+    È lo stesso difetto già corretto nel monitor diagnostico, e si riusa apposta lo
+    STESSO pattern: due implementazioni separate della stessa regola divergono, e la
+    seconda copia sarebbe quella dimenticata.
+    """
+    from .diag import scrub_coordinates   # stdlib-only, import sicuro
+
+    if isinstance(obj, dict):
+        return {k: _scrub_geo(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_geo(v) for v in obj]
+    if isinstance(obj, str):
+        return scrub_coordinates(obj)
+    return obj
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
@@ -130,4 +154,10 @@ async def async_get_config_entry_diagnostics(
         snap = recorder.snapshot()
         diag["diagnostic_mode"] = _scrub_vin(async_redact_data(snap, TO_REDACT), vin)
 
-    return diag
+    # Passata FINALE sulle coordinate, su tutto il report (2026-07-20).
+    # Sta qui, in fondo e una volta sola, di proposito: applicarla ai singoli campi
+    # significherebbe ricordarsi di farlo per ognuno — ed è esattamente la dimenticanza
+    # che ha fatto uscire la posizione dentro `probe_status`, un messaggio discorsivo che
+    # nessuna deny-list per chiave poteva coprire. Qui non c'è nulla da ricordare: ciò che
+    # esce dal modulo è già passato di qui.
+    return _scrub_geo(diag)

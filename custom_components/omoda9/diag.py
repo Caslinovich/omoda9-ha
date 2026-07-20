@@ -91,6 +91,26 @@ CLEAR_KEYS = {"cp_code", "cp_msg"}
 
 REDACTED = "**REDACTED**"
 
+# Il solo pattern delle coordinate, isolato: lo riusa anche `diagnostics.py` (il file
+# di «Scarica diagnostica»), dove lo stesso difetto si era ripresentato. Una sola
+# implementazione — due copie della stessa regola divergono, e a divergere è sempre
+# quella che ci si dimentica di aggiornare.
+#
+# Forma: 1-3 cifre intere, punto, ALMENO 4 decimali. Le coordinate hanno 4-7 decimali;
+# la telemetria reale (tensioni "350.3", consumi "5.6") ne ha 1-2 e non viene toccata.
+# Il `(?<![:\d.])` è ESSENZIALE: senza, il pattern mangiava i secondi-e-microsecondi dei
+# timestamp ISO (`…:07.428912` → `…**GEO**`), corrompendo `last_seen`/`last_pos_fix` nella
+# diagnostica — cioè proprio i campi che servono al supporto. Escludendo ciò che segue
+# `:` (timestamp) o una cifra/punto (parte di un numero più lungo, es. un epoch), restano
+# solo le coordinate vere, precedute da `=`, spazio, `,` o `(`.
+_RE_COORD = re.compile(r"(?<![:\d.])-?\d{1,3}\.\d{4,}\b")
+
+
+def scrub_coordinates(s: str) -> str:
+    """Sostituisce con `**GEO**` ogni coordinata trovata dentro una stringa."""
+    return _RE_COORD.sub("**GEO**", s) if s else s
+
+
 # Rete di sicurezza sulle STRINGHE: intercetta un segreto anche dentro un campo dal nome
 # sconosciuto, che la deny-list per chiave non coprirebbe. L'ordine conta: i pattern più
 # specifici (JWT, PEM) precedono quelli generici (esadecimale lungo).
@@ -110,7 +130,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Volutamente stretto: parte intera di 1-3 cifre e ALMENO 4 decimali. Non tocca i
     # valori di telemetria reali (temperature "21.0", tensioni "384", percentuali "72")
     # né i timestamp epoch, che hanno la parte intera ben più lunga di 3 cifre.
-    (re.compile(r"-?\b\d{1,3}\.\d{4,}\b"), "**GEO**"),
+    (_RE_COORD, "**GEO**"),
 ]
 
 

@@ -47,6 +47,17 @@ RICH_KEYS = ("lat", "lon", "altitude", "direction", "gpsSpeed", "vehicleSpeed",
              "odometer", "dumpEnergy", "electricRange", "pureElectricRange",
              "chargeState", "inCarTemperature", "onlineStatus")
 
+# Sottoinsieme GEOGRAFICO di RICH_KEYS: la POSIZIONE. Escluso dal messaggio leggibile —
+# non dalla telemetria. Il messaggio `probe_status` finisce nello stato di un sensore (e
+# quindi nel database di HA), nel file «Scarica diagnostica» e nel log dell'integrazione;
+# scriverci dentro «lat=…, lon=…» faceva uscire in chiaro dove si trova la macchina in
+# tutti e tre (trovato in campo il 2026-07-20). La posizione continua ad arrivare al
+# device_tracker per la sua strada (`on_data` riceve i dati GREZZI, non questo riepilogo),
+# quindi non si perde nulla: sparisce solo dal TESTO. Odometro/energia/autonomia/
+# temperatura restano, così il messaggio resta utile per la diagnostica e la scoperta.
+_GEO_KEYS = ("lat", "lon", "altitude", "direction")
+_MSG_KEYS = tuple(k for k in RICH_KEYS if k not in _GEO_KEYS)
+
 
 def _log(rec: dict):
     if not PROBE_LOG:
@@ -62,10 +73,15 @@ def _log(rec: dict):
 
 
 def _rich(data: dict) -> dict:
-    """Estrae i campi interessanti se presenti, per il riepilogo leggibile."""
+    """Estrae i campi interessanti per il riepilogo leggibile — SENZA la posizione.
+
+    Vedi `_GEO_KEYS`: le coordinate non entrano nel messaggio (che è pubblicato come
+    stato di un sensore, quindi persistito e potenzialmente condiviso). Restano tutti gli
+    altri campi ricchi. La posizione viaggia comunque intatta verso il device_tracker
+    tramite `on_data`, che riceve il dizionario grezzo, non questo."""
     if not isinstance(data, dict):
         return {}
-    return {k: data[k] for k in RICH_KEYS if k in data}
+    return {k: data[k] for k in _MSG_KEYS if k in data}
 
 
 def probe_once(ctx, publish, force=False, on_data=None):

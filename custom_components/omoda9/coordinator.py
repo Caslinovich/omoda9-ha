@@ -123,6 +123,18 @@ GEO_KEYS = ("lat", "lon", "latitude", "longitude", "speed", "vehicleSpeed",
             "direction", "heading", "altitude", "gpsTime", "positionTime")
 
 
+def _is_unit_flag(key: str) -> bool:
+    """True se il campo è un FLAG DI UNITÀ DI MISURA, non un valore.
+
+    Convenzione dell'API Chery: i campi che finiscono in `Unit` (`rangeUnit`,
+    `averageFuelUnit`, `tirePressureUnit`, `avgHkPowerUnit`…) valgono sempre 1 o 2 e dicono
+    solo *in che unità* è espresso il campo omonimo — non contengono un dato. La scoperta
+    automatica dei campi non mappati (monitor diagnostico) li segnalava come "da mappare":
+    rumore puro, che nascondeva gli eventuali campi VERI ancora da scoprire. Filtrarli per
+    suffisso copre anche quelli che comparissero in futuro."""
+    return key.endswith("Unit")
+
+
 class Omoda9Coordinator(DataUpdateCoordinator):
     """Tiene la connessione MQTT all'auto e lo stato; espone azioni via core/."""
 
@@ -644,7 +656,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         if self._diag is not None and svc == "5A02":
             for k, v in data.items():
                 if (k != "time" and k not in CMD_CONFIRM_META and k not in META
-                        and k not in GEO_KEYS):
+                        and k not in GEO_KEYS and not _is_unit_flag(k)):
                     self._diag.note_unknown_field(k, v, svc)
 
         patch.update({"fields": fields_copy, "awake": True})

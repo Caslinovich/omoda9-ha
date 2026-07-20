@@ -88,6 +88,11 @@ class _RtSpec:
     compute: Callable | None = None  # valore CALCOLATO da più campi realtime (ignora `field`)
     scale: float | None = None  # fattore moltiplicativo sul valore grezzo (es. kPa→bar = 0.01)
     precision: int | None = None  # cifre decimali suggerite per la UI
+    # VOLATILE: campo che ha senso SOLO in una condizione precisa (es. remainChargeTime
+    # esiste solo mentre l'auto carica). Assente = la condizione è finita → il valore va
+    # a "sconosciuto", NON si tiene l'ultimo noto. Senza questo flag «Tempo di ricarica
+    # residuo» restava a 120 min per ore ad auto scollegata (fuorviante).
+    volatile: bool = False
 
 
 # ── Mappe codice→testo per i campi enum di ricarica ──
@@ -178,7 +183,7 @@ _RT_SENSORS: list[_RtSpec] = [
     # in MINUTI — da riconfermare a vettura in carica. chargeState/appointmentChargeState/
     # fastChargingGunStatus = codici (tutti 0 = a riposo dal vivo) → grezzi da decodificare.
     _RtSpec("tempo_ricarica", "Tempo di ricarica residuo", "remainChargeTime",
-            DUR, MIN, None, "mdi:timer-sand"),
+            DUR, MIN, None, "mdi:timer-sand", volatile=True),
     _RtSpec("stato_ricarica", "Stato ricarica", "chargeState",
             None, None, None, "mdi:ev-station", diag=True, numeric=False,
             vmap=CHARGE_STATE_MAP),
@@ -362,6 +367,16 @@ class Omoda9RealtimeSensor(_Omoda9RestoreSensor):
             self._attr_suggested_display_precision = spec.precision
         if spec.diag:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self):
+        # VOLATILE: nessun fallback all'ultimo valore noto. Se il campo è assente ora, la
+        # sua condizione è finita (es. carica terminata → remainChargeTime sparisce dal
+        # payload) e il valore corretto è "sconosciuto", non l'ultimo letto. Per gli altri
+        # sensori vale invece la regola normale del RestoreSensor (tieni l'ultimo noto).
+        if self._spec.volatile:
+            return self._live_value()
+        return super().native_value
 
     def _live_value(self):
         # campo CALCOLATO da più field realtime (es. autonomia totale = elettrica + benzina)

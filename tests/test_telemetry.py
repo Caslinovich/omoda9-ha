@@ -151,6 +151,33 @@ async def test_la_posizione_non_genera_campi_sconosciuti(hass, integrazione_avvi
         coord._diag = None
 
 
+async def test_i_flag_unita_non_sporcano_la_scoperta(hass, integrazione_avviata):
+    """I campi che finiscono in `Unit` sono marcatori di unità di misura (valgono sempre
+    1 o 2), non valori: non devono comparire fra i "campi da scoprire", altrimenti
+    nascondono nel rumore gli eventuali campi VERI ancora da mappare (trovato in campo il
+    2026-07-20: rangeUnit/averageFuelUnit/tirePressureUnit/avgHkPowerUnit segnalati a vuoto)."""
+    coord = _coordinator(hass, integrazione_avviata)
+    visti: list[str] = []
+
+    class FintoMonitor:
+        def note_unknown_field(self, key, value, svc):
+            visti.append(key)
+
+        def record(self, *a, **kw):
+            pass
+
+    coord._diag = FintoMonitor()
+    try:
+        await _consegna(hass, coord, FX.telemetry_5a02(
+            rangeUnit="1", averageFuelUnit="1", tirePressureUnit="1", avgHkPowerUnit="2",
+            rangeKm="215"))
+        assert not any(k.endswith("Unit") for k in visti), \
+            f"flag-unità segnalati come campi da scoprire: {[k for k in visti if k.endswith('Unit')]}"
+        assert "rangeKm" in visti, "il campo vero accanto ai flag deve restare segnalato"
+    finally:
+        coord._diag = None
+
+
 async def test_serratura_zero_e_bloccata(hass, integrazione_avviata):
     """Convenzione verificata dal vivo (2026-06-17): doorLock 0 = Bloccata, 1 = Sbloccata.
 
