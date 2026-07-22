@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.7.0 — 2026-07-22
+
 ### 🇮🇹 Italiano
 
 - **Basta codici di verifica non richiesti.** Quando il collegamento con l'auto scadeva, l'integrazione spediva un'email col codice da sola — e lo rifaceva a ogni riavvio di Home Assistant. Ora nessun codice parte se non lo chiedi tu.
