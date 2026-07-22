@@ -18,7 +18,7 @@ Flusso (verificato sul codice reale, SESSIONE11_REPORT.md):
 
 Uso strettamente personale (auto/account di Rino). NON pubblicare token/cert.
 """
-import os, json, time, threading
+import hashlib, os, json, time, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,6 +33,11 @@ from . import codes
 # di ogni chiamata: arrivano dal `CoreCtx` del veicolo (primo argomento di ogni funzione).
 # Idem i lock, che erano di processo: due auto configurate se li contendevano senza
 # alcun motivo, ed era il PRIMO entry a decidere il VIN per tutti.
+
+# Ogni quanto si concede un nuovo tentativo con un refresh_token che il server ha già
+# respinto: abbastanza raro da non essere martellamento, abbastanza spesso da rimettersi
+# in pari da soli se quel rifiuto fosse stato un abbaglio del gateway.
+RITENTA_REFRESH_DOPO_S = int(os.environ.get("OMODA_RETRY_REFRESH", "3600"))
 
 COOLDOWN_S = int(os.environ.get("WAKE_COOLDOWN", "300"))   # min secondi tra due smsAwaken inviati
 POLL_N     = int(os.environ.get("WAKE_POLL_N", "12"))      # n. cicli di poll
@@ -63,10 +68,51 @@ def _access_token(ctx):
         return d["access_token"]
     return tok.get("access_token")
 
+def _esito_refresh(ctx, ok: bool, motivo: str, *, diag: bool = True, **extra) -> tuple[bool, str]:
+    """Registra l'esito del rinnovo (stato per-veicolo + monitor diagnostico) e lo ritorna.
+
+    Il MOTIVO è un marcatore stabile, non un testo per l'utente: ci si instrada sopra
+    (vedi `session.check`). Nel diag finiscono solo esito/motivo/codice HTTP — MAI il
+    token, che è una credenziale.
+
+    `diag=False` per gli esiti decisi in locale senza contattare il server: registrarli
+    riempirebbe il file diagnostico di un evento ogni pochi minuti per tutta la durata di
+    una sessione morta, seppellendo l'unico evento che conta (il rifiuto originale)."""
+    try:
+        ctx.stato.refresh_motivo = motivo
+        ctx.stato.refresh_ts = time.time()
+    except Exception:  # noqa: BLE001 — contesti ridotti nei test/diagnostica
+        pass
+    if diag:
+        ctx.diag("token_refresh", ok=ok, motivo=motivo, **extra)
+    return ok, motivo
+
+
+def _impronta(rt: str) -> str:
+    """Impronta del refresh_token: si confronta questa, mai la credenziale in chiaro."""
+    return hashlib.sha256(rt.encode("utf-8")).hexdigest()
+
+
 def _refresh_token(ctx) -> bool:
+    """Compatibilità: True se il rinnovo è riuscito. Il perché sta in `_refresh_token_detail`."""
+    ok, _motivo = _refresh_token_detail(ctx)
+    return ok
+
+
+def _refresh_token_detail(ctx) -> tuple[bool, str]:
     """Rinnova l'access_token col grant `refresh_token` (NIENTE OTP) e riscrive token.json.
     Stesso endpoint/headers del login OTP (login_otp.py), che NON è dietro il firewall Aliyun.
-    Ritorna True se ha ottenuto un nuovo access_token, False altrimenti (es. refresh scaduto → serve OTP).
+
+    Ritorna `(ok, motivo)`, dove `motivo` è un marcatore STABILE:
+      ""                  rinnovo riuscito
+      "assente"           nessun refresh_token utilizzabile → serve per forza un OTP
+      "rete:<Tipo>"       la richiesta non è partita o non è tornata → NON è una revoca
+      "rifiutato:<key>"   il server ha detto no (es. `invalid_grant`) → serve un OTP
+      "risposta"          risposta 2xx ma senza access_token → trattata come rifiuto
+
+    La distinzione fra "rete:" e "rifiutato:" è il punto di tutta la funzione: senza,
+    una connessione ballerina fa comparire la card «Riautentica» e l'utente brucia un
+    OTP per un problema che si sarebbe risolto da solo.
 
     C1: protetto da `_TOKEN_LOCK` con double-check. Fotografo l'access_token che il
     chiamante ha visto (PRIMA del lock); dentro il lock rileggo token.json: se sul
@@ -77,7 +123,7 @@ def _refresh_token(ctx) -> bool:
         with open(ctx.token_path) as fh:
             tok0 = json.load(fh)
     except Exception:
-        return False
+        return _esito_refresh(ctx, False, "assente")
     seen_at = (tok0.get("data", tok0) or {}).get("access_token") if isinstance(tok0, dict) else None
 
     with ctx.stato.lock_token:
@@ -86,15 +132,33 @@ def _refresh_token(ctx) -> bool:
             with open(ctx.token_path) as fh:
                 tok = json.load(fh)
         except Exception:
-            return False
+            return _esito_refresh(ctx, False, "assente")
         d = (tok.get("data", tok) or {}) if isinstance(tok, dict) else {}
         cur_at = d.get("access_token")
         if seen_at and cur_at and cur_at != seen_at:
             # già rinnovato da un altro thread: il token su disco è valido, non toccarlo
-            return True
+            return _esito_refresh(ctx, True, "", concorrente=True)
         rt = d.get("refresh_token")
         if not rt:
-            return False
+            return _esito_refresh(ctx, False, "assente")
+        # FRENO: se il server ha già respinto ESATTAMENTE questo refresh_token, non c'è
+        # nulla da guadagnare a ripresentarglielo — un token revocato non torna valido da
+        # solo, serve un OTP. Senza questo freno ogni chiamata al cloud (controllo
+        # sessione, sonda, battito marcia) ritenta: misurato il 22/07, 5 tentativi identici
+        # in 6 minuti, e per tutte le ~10 ore di sessione morta della notte prima.
+        # Martellare l'endpoint di autenticazione con credenziali già rifiutate è proprio
+        # il comportamento che i gateway sanzionano.
+        # Si riprova comunque una volta ogni `RITENTA_REFRESH_DOPO_S`, per non restare
+        # bloccati per sempre se quel rifiuto fosse stato un abbaglio del server; e il
+        # freno si scioglie da sé appena sul file compare un refresh_token diverso.
+        impronta = _impronta(rt)
+        try:
+            bruciato = ctx.stato.refresh_bruciato
+            da_quanto = time.time() - (ctx.stato.refresh_bruciato_ts or 0.0)
+        except Exception:  # noqa: BLE001 — contesti ridotti nei test/diagnostica
+            bruciato, da_quanto = "", 1e9
+        if impronta == bruciato and da_quanto < RITENTA_REFRESH_DOPO_S:
+            return _esito_refresh(ctx, False, "rifiutato:gia_respinto", diag=False)
         # Ricetta verificata (= identica all'OTP login di prova_token.py): firma applicativa
         # via headers_post + parametri in QUERY STRING. Senza firma il gateway risponde 428.
         TP = "/auth/oauth2/token"
@@ -102,14 +166,27 @@ def _refresh_token(ctx) -> bool:
         try:
             H = A.headers_post(TP, secret=A.SIGN_SECRET, ctx=ctx)
             r = requests.post(ctx.bff + TP, params=params, headers=H, timeout=20)
+        except Exception as err:  # noqa: BLE001 — rete: NON è una sessione revocata
+            return _esito_refresh(ctx, False, f"rete:{type(err).__name__}")
+        http = r.status_code
+        try:
             j = r.json()
-        except Exception:
-            return False
+        except Exception:  # noqa: BLE001 — body illeggibile: il server ha risposto qualcosa
+            return _esito_refresh(ctx, False, "risposta", http=http)
         if not isinstance(j, dict):
-            return False
+            return _esito_refresh(ctx, False, "risposta", http=http)
         at = j.get("access_token") or (j.get("data") or {}).get("access_token")
         if not at:
-            return False
+            # `key`/`msg` del gateway Chery: es. "invalid_grant" quando il refresh_token
+            # è stato revocato. Non è un segreto e va nel diag: è LA prova di cosa è
+            # successo, quella che altrimenti manca quando si indaga a posteriori.
+            key = str(j.get("key") or j.get("msg") or j.get("error") or "?")[:40]
+            try:  # arma il freno: questo token è bruciato finché non ne arriva un altro
+                ctx.stato.refresh_bruciato = impronta
+                ctx.stato.refresh_bruciato_ts = time.time()
+            except Exception:  # noqa: BLE001
+                pass
+            return _esito_refresh(ctx, False, f"rifiutato:{key}", http=http)
         # scrittura atomica: nuovo token su file temporaneo poi rename (token.json mai corrotto)
         try:
             path = ctx.token_path
@@ -118,9 +195,29 @@ def _refresh_token(ctx) -> bool:
                 json.dump(j, f, ensure_ascii=False)
             os.chmod(tmp, 0o600)   # il token è una credenziale: leggibile solo dal proprietario
             os.replace(tmp, path)
-        except Exception:
-            return False
-        return True
+        except Exception as err:  # noqa: BLE001
+            return _esito_refresh(ctx, False, f"scrittura:{type(err).__name__}", http=http)
+        return _esito_refresh(ctx, True, "", http=http)
+
+
+def _eta_token(ctx) -> tuple[float, int]:
+    """(secondi trascorsi dall'ultimo rinnovo, durata dichiarata in secondi).
+
+    L'età si misura sul mtime di token.json, che viene riscritto a ogni rinnovo: il
+    token è opaco (non è un JWT), quindi la data di emissione non è leggibile da dentro.
+    Ritorna (-1, 0) se non determinabile."""
+    try:
+        eta = max(0.0, time.time() - os.stat(ctx.token_path).st_mtime)
+        with open(ctx.token_path) as fh:
+            tok = json.load(fh)
+    except Exception:  # noqa: BLE001
+        return -1.0, 0
+    d = (tok.get("data", tok) or {}) if isinstance(tok, dict) else {}
+    try:
+        durata = int(d.get("expires_in") or 0)
+    except (TypeError, ValueError):
+        durata = 0
+    return eta, durata
 
 def _bff_login(ctx, _allow_refresh=True):
     """Ritorna (userToken, tUserId). Solleva su errore di rete; (None,None) se rifiutato.

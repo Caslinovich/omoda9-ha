@@ -186,3 +186,52 @@ async def test_un_cambio_di_opzioni_ricarica_l_entry(
 
     assert chiamate == [integrazione_avviata.entry_id], \
         "un cambio di opzioni non ha ricaricato l'entry"
+
+
+# ───────── lo stato «auto sveglia» deve SCADERE ─────────
+# Trovato in campo il 2026-07-22: il flag veniva acceso a ogni messaggio dell'auto e non si
+# spegneva mai — `on` da quasi 4 ore su un'auto ferma, con la finestra prevista di 5 minuti.
+# Il danno vero non è il sensore: `do_wake` chiede a questo stato se l'auto è già sveglia,
+# quindi il pulsante «Sveglia auto» rispondeva «già sveglia» senza mandare nulla.
+
+async def test_auto_sveglia_scade_dopo_la_finestra(hass, coord, monkeypatch):
+    """Passata la finestra senza messaggi, l'auto NON è più considerata sveglia."""
+    import time as _t
+
+    coord.awake_window = 300
+    coord._last_msg_ts = _t.time()
+    assert coord._auto_e_sveglia() is True
+
+    coord._last_msg_ts = _t.time() - 301        # ultimo messaggio oltre la finestra
+    assert coord._auto_e_sveglia() is False, \
+        "lo stato «sveglia» non scade: il pulsante Sveglia auto resta inutilizzabile"
+
+
+async def test_senza_nessun_messaggio_non_e_sveglia(hass, coord):
+    """Prima di qualsiasi messaggio l'auto non è sveglia (nessun falso positivo)."""
+    coord._last_msg_ts = 0.0
+    assert coord._auto_e_sveglia() is False
+
+
+async def test_la_sveglia_interroga_lo_stato_reale(hass, coord, monkeypatch):
+    """`do_wake` deve ricevere lo stato calcolato, non il flag memorizzato.
+
+    È il punto in cui il difetto faceva danno: con un flag acceso per sempre l'SMS di
+    sveglia non partiva più e nemmeno il ripiego su «Localizza»."""
+    import time as _t
+
+    visto = {}
+
+    def finto_do_wake(ctx, publish, is_awake=None, send_sms=True):
+        visto["awake"] = is_awake() if is_awake else None
+        return {"ok": True, "online": True}
+
+    from custom_components.omoda9.core import wake as WAKE
+
+    monkeypatch.setattr(WAKE, "do_wake", finto_do_wake)
+    coord.awake_window = 300
+    coord._last_msg_ts = _t.time() - 301        # auto ferma da oltre la finestra
+    coord.data["awake"] = True                  # ...ma il vecchio flag è rimasto acceso
+    await hass.async_add_executor_job(coord._wake)
+    assert visto["awake"] is False, \
+        "la sveglia ha creduto al flag memorizzato invece che allo stato reale"

@@ -38,7 +38,15 @@
       },
       "reauth_confirm": {
         "title": "Ri-autentica Omoda 9 / Jaecoo",
-        "description": "La sessione è scaduta (ad esempio perché è stata aperta l'app ufficiale). Un nuovo codice di verifica è stato inviato a {email}. Inseriscilo qui sotto per ripristinare l'accesso. Lascia il campo vuoto e conferma per rinviare il codice.{reason}",
+        "description": "La sessione è scaduta: finché non riautentichi l'integrazione non riesce a parlare con l'auto e comandi e sensori restano fermi.\n\n**Nessun codice è stato inviato in automatico.** Scegli «Inviami un codice nuovo» per riceverne uno fresco a {email}.{reason}",
+        "menu_options": {
+          "send_code": "Inviami un codice nuovo via email",
+          "enter_code": "Ho già un codice valido"
+        }
+      },
+      "enter_code": {
+        "title": "Inserisci il codice di verifica",
+        "description": "Inserisci il codice appena inviato a {email}. I codici scadono dopo pochi minuti: se viene rifiutato puoi tornare indietro e chiederne subito uno nuovo.{reason}",
         "data": {
           "code": "Codice OTP"
         }
@@ -48,7 +56,8 @@
       "otp_send_failed": "Impossibile inviare il codice OTP. Controlla email/PIN e riprova.",
       "otp_invalid": "Codice OTP non valido o scaduto.",
       "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account.",
-      "pin_required": "Inserisci il PIN di controllo veicolo."
+      "pin_required": "Inserisci il PIN di controllo veicolo.",
+      "otp_required": "Inserisci il codice che hai ricevuto via email."
     },
     "abort": {
       "already_configured": "Questo veicolo (VIN) è già configurato.",
@@ -257,8 +266,8 @@
       "autonomia_benzina": {
         "name": "Autonomia benzina"
       },
-      "autonomia_combinata_stima": {
-        "name": "Autonomia combinata (stima)"
+      "autonomia_benzina_miglia": {
+        "name": "Autonomia benzina (miglia)"
       },
       "autonomia_elettrica": {
         "name": "Autonomia elettrica"

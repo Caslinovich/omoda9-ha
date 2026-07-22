@@ -178,7 +178,7 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._data: dict[str, Any] = {}
         self._tuserid: str = ""
         self._vins: list[str] = []
-        self._otp_requested: bool = False   # reauth: OTP già inviato in questa sessione di flow
+        self._reauth_reason: str = ""       # reauth: motivo dell'ultimo tentativo, mostrato nel menu
 
     @staticmethod
     @callback
@@ -311,21 +311,64 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
 
     # ───────────────── Riautenticazione nativa (sessione morta / app ufficiale aperta) ─────────────────
+    # REGOLA: aprire questa pagina non manda MAI un codice. L'OTP parte solo quando
+    # l'utente sceglie esplicitamente «Inviami un codice nuovo».
+    #
+    # Prima l'invio era implicito nell'apertura del flow, e il flow si ricrea a OGNI
+    # avvio di Home Assistant finché la sessione è morta: riavviare HA tre volte voleva
+    # dire tre mail non richieste. Peggio, non c'era modo di chiedere un codice fresco —
+    # il reinvio era nascosto dietro «lascia il campo vuoto e invia», ma il campo è
+    # obbligatorio e il frontend rifiuta l'invio: vicolo cieco, con in mano solo un
+    # codice ormai scaduto.
     async def async_step_reauth(self, entry_data: dict[str, Any] | None = None):
         """Punto d'ingresso della reauth (HA mostra la card "Riautentica")."""
-        self._otp_requested = False
+        self._reauth_reason = ""
         return await self.async_step_reauth_confirm()
 
+    def _reauth_targets(self):
+        """(entry, coordinator) del veicolo da riautenticare, (None, None) se spariti."""
+        entry_id = self.context.get("entry_id", "")
+        return (self.hass.config_entries.async_get_entry(entry_id),
+                self.hass.data.get(DOMAIN, {}).get(entry_id))
+
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
-        """Invia un nuovo OTP e conia il token, riusando la logica del coordinator
-        (`_request_otp`/`_confirm_otp`, che fanno `_bind_core` sulla token-path per-VIN).
-        Campo vuoto = reinvia il codice."""
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-        coordinator = self.hass.data.get(DOMAIN, {}).get(self.context["entry_id"])
-        errors: dict[str, str] = {}
+        """Menu della riautenticazione: due strade esplicite, nessun effetto collaterale.
+
+        È anche il punto di ritorno dopo un codice sbagliato o un invio fallito: da qui
+        si può SEMPRE chiedere un codice nuovo, quindi non si resta mai in trappola."""
+        entry, coordinator = self._reauth_targets()
         if entry is None or coordinator is None:
             return self.async_abort(reason="reauth_no_entry")
-        reason = ""
+        return self.async_show_menu(
+            step_id="reauth_confirm",
+            menu_options=["send_code", "enter_code"],
+            description_placeholders={"email": entry.data.get(CONF_EMAIL, ""),
+                                      "reason": self._reauth_reason},
+        )
+
+    async def async_step_send_code(self, user_input: dict[str, Any] | None = None):
+        """Invia un codice OTP nuovo — SOLO su gesto esplicito dell'utente."""
+        _entry, coordinator = self._reauth_targets()
+        if coordinator is None:
+            return self.async_abort(reason="reauth_no_entry")
+        try:
+            ok, detail = await self.hass.async_add_executor_job(coordinator._request_otp)
+        except Exception as e:  # noqa: BLE001
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        if not ok:
+            # Si torna al menu con il motivo in chiaro: riprovare è a un tap.
+            self._reauth_reason = _reason_line(detail)
+            _LOGGER.warning("Omoda9: reauth, invio OTP fallito: %s", detail)
+            return await self.async_step_reauth_confirm()
+        self._reauth_reason = ""
+        return await self.async_step_enter_code()
+
+    async def async_step_enter_code(self, user_input: dict[str, Any] | None = None):
+        """Inserimento del codice ricevuto via email (nessun invio implicito qui)."""
+        entry, coordinator = self._reauth_targets()
+        if entry is None or coordinator is None:
+            return self.async_abort(reason="reauth_no_entry")
+        errors: dict[str, str] = {}
         if user_input is not None:
             code = (user_input.get("code") or "").strip()
             if code:
@@ -333,25 +376,18 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     coordinator._confirm_otp, code)
                 if ok:
                     return self.async_update_reload_and_abort(entry, data=entry.data)
-                errors["base"] = "otp_invalid"
-                reason = _reason_line(detail)
+                # Codice sbagliato o scaduto → torna al menu, dove «Inviami un codice
+                # nuovo» è a portata di tap. Restare su questa form significherebbe
+                # ricreare il vicolo cieco di prima.
+                self._reauth_reason = _reason_line(detail)
                 _LOGGER.warning("Omoda9: reauth, conferma OTP fallita: %s", detail)
-            else:
-                self._otp_requested = False   # nessun codice = richiesta di reinvio
-        # (ri)invia il codice OTP la prima volta che si mostra la form (o su richiesta di reinvio)
-        if not self._otp_requested:
-            self._otp_requested = True
-            try:
-                await self.hass.async_add_executor_job(coordinator._request_otp)
-            except Exception as e:  # noqa: BLE001
-                errors["base"] = "otp_send_failed"
-                reason = _reason_line(f"{type(e).__name__}: {e}")
-                _LOGGER.warning("Omoda9: reauth, invio OTP fallito: %s", e)
+                return await self.async_step_reauth_confirm()
+            errors["code"] = "otp_required"
         schema = vol.Schema({vol.Required("code"): str})
         return self.async_show_form(
-            step_id="reauth_confirm", data_schema=schema, errors=errors,
+            step_id="enter_code", data_schema=schema, errors=errors,
             description_placeholders={"email": entry.data.get(CONF_EMAIL, ""),
-                                      "reason": reason})
+                                      "reason": self._reauth_reason})
 
 
 class Omoda9OptionsFlow(config_entries.OptionsFlow):

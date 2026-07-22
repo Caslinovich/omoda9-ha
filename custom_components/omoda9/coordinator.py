@@ -42,7 +42,7 @@ from .const import (
 )
 from .timers import (
     TimerRegistry, GRUPPO_POLL,
-    KEEPALIVE, POLL, HV_POLL, STARTUP_PROBE, DRIVE_WATCH,
+    KEEPALIVE, POLL, HV_POLL, STARTUP_PROBE, DRIVE_WATCH, AWAKE,
 )
 
 # Cert minimi per il mutual-TLS MQTT (il .cer del server non serve a tls_set, come nel bridge).
@@ -52,6 +52,26 @@ REQUIRED_CERTS = ("ca.pem", "client.pem", "client.key")
 # Deve restare allineato a `session.STATUS_EXPIRED` (il modulo core/ è importabile solo a
 # runtime, dentro l'executor, quindi qui non lo si può importare a module-level).
 SESSION_STATUS_EXPIRED = "EXPIRED"
+
+# Orologi presenti nel frame realtime: vanno IGNORATI quando si confrontano due letture,
+# altrimenti due risposte con dati identici risulterebbero sempre "cambiate".
+_CAMPI_OROLOGIO = frozenset({"resultTime", "collectTime", "time", "updateTime"})
+
+
+def _senza_orologi(o):
+    """Copia della telemetria senza i campi-orologio, a qualsiasi profondità."""
+    if isinstance(o, dict):
+        return {k: _senza_orologi(v) for k, v in o.items() if k not in _CAMPI_OROLOGIO}
+    if isinstance(o, list):
+        return [_senza_orologi(v) for v in o]
+    return o
+
+
+def _impronta_telemetria(data: dict) -> str:
+    """Impronta del CONTENUTO della telemetria: cambia solo se cambia un dato vero."""
+    return hashlib.sha256(
+        json.dumps(_senza_orologi(data), sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -215,10 +235,14 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                      # — sensori diagnostici (parità col bridge) —
                      "cmd_status": None, "wake_status": None, "probe_status": None,
                      "last_seen": None, "last_wake": None, "last_pos_fix": None,
-                     # [2.0] istante del frame realtime dell'auto (campo resultTime): dice
-                     # QUANTO è fresco il dato batteria/odometro mostrato (utile ad auto ferma).
+                     # Istante in cui la telemetria dell'auto è CAMBIATA l'ultima volta:
+                     # dice quanto è fresco il dato batteria/odometro mostrato. Vedi
+                     # `_on_probe_data` per il perché non si usi il timestamp del cloud.
                      "car_data_ts": None,
                      "realtime": None}
+        # Impronta dell'ultima telemetria vista, per accorgersi di quando cambia davvero.
+        # `None` = nessuna lettura ancora fatta in questa sessione.
+        self._impronta_dati: str | None = None
         # Monitor diagnostico per lo SVILUPPATORE (diag.py): `None` = dormiente. Finché
         # resta None ogni punto di aggancio è un solo `is not None` e non si alloca nulla
         # — vale soprattutto per `_on_car_message`, che gira a ogni push dell'auto.
@@ -304,7 +328,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         Eccezione: bandierina a `0` → `read_switch` ritorna `math.inf` e il timer NON
         viene armato. Lo spegnimento torna manuale (si cancella la bandierina), scelta
         di chi sviluppa quando l'evento da osservare è raro e una finestra fissa
-        rischierebbe di scadere proprio prima che capiti."""
+        rischierebbe di scadere proprio prima che capiti.
+
+        Idempotente: `async_setup_entry` lo arma presto (prima del primo controllo
+        sessione) e `async_start` lo richiama poco dopo — la seconda chiamata non deve
+        creare un secondo scrittore sullo stesso file né riarmare l'auto-spegnimento."""
+        if self._diag is not None:
+            return
         from .diag import DiagRecorder, read_switch
         path = self.hass.config.path(DIAG_SWITCH_FILE)
         until = await self.hass.async_add_executor_job(read_switch, path)
@@ -371,10 +401,49 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     async def _keepalive(self, _now) -> None:
         try:
+            # Prima il rinnovo PROATTIVO: se il token è a fine vita lo si rinnova adesso,
+            # con la sessione ancora viva. Aspettare che scada significa rinnovare fino a
+            # 15 minuti dopo la scadenza (la cadenza di questo timer), all'estremo della
+            # finestra utile del refresh_token. Sola lettura verso il cloud, nessun OTP.
+            rinnovato, motivo = await self.hass.async_add_executor_job(self._refresh_proattivo)
+            if rinnovato:
+                _LOGGER.debug("[keepalive] token rinnovato in anticipo")
+            elif motivo not in ("non_serve", "non_determinabile"):
+                _LOGGER.debug("[keepalive] rinnovo anticipato non riuscito: %s", motivo)
             ok, detail = await self.async_check_session()
             _LOGGER.debug("[keepalive] sessione %s — %s", "ok" if ok else "KO", detail)
         except Exception as err:  # noqa: BLE001 — un errore di rete non deve fermare il timer
             _LOGGER.debug("[keepalive] errore non bloccante: %s", err)
+
+    def _refresh_proattivo(self) -> tuple[bool, str]:
+        from .core import session as SESSION
+        return SESSION.refresh_se_prossimo_a_scadere(self.ctx)
+
+    # ───────────────── stato «auto sveglia» (con scadenza) ─────────────────
+    # L'auto è considerata sveglia finché continua a mandare messaggi. Prima il flag veniva
+    # acceso a ogni messaggio e non si spegneva MAI: bastava un solo push perché restasse
+    # `on` per giorni. Non era un difetto solo estetico — `do_wake` chiede proprio a questo
+    # flag se l'auto è già sveglia (`core/wake.py`), quindi il pulsante «Sveglia auto»
+    # rispondeva «già sveglia» e non mandava nulla, saltando anche il ripiego su Localizza.
+    def _auto_e_sveglia(self) -> bool:
+        """Sorgente di verità: si misura sul tempo dall'ultimo messaggio dell'auto."""
+        with self._state_lock:
+            ultimo = self._last_msg_ts
+        return bool(ultimo) and (time.time() - ultimo) < self.awake_window
+
+    @callback
+    def _arma_scadenza_sveglia(self) -> None:
+        """Programma lo spegnimento del flag a fine finestra. Nessun contatto col cloud:
+        per questo NON appartiene al gruppo dell'interruttore «Aggiornamento automatico»."""
+        self._timers.arm(AWAKE, lambda: async_call_later(
+            self.hass, self.awake_window + 1, self._scadenza_sveglia_cb))
+
+    async def _scadenza_sveglia_cb(self, _now) -> None:
+        if self._auto_e_sveglia():
+            self._arma_scadenza_sveglia()   # nel frattempo è arrivato altro: si riparte
+            return
+        if self.data.get("awake"):
+            self._update({"awake": False})
 
     # ───────────────── poll telemetria periodico (sveglia + lettura) ─────────────────
     def async_start_telemetry_poll(self) -> None:
@@ -666,6 +735,11 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             # così il prossimo comando in coda parte appena l'auto ha confermato questo.
         self._update(patch)
 
+        # Lo stato «sveglia» ha una scadenza: senza, resterebbe acceso per sempre (vedi
+        # `_auto_e_sveglia`). Si ri-arma a ogni messaggio, dal loop perché qui siamo nel
+        # thread di paho.
+        self.hass.loop.call_soon_threadsafe(self._arma_scadenza_sveglia)
+
         # [H3] fronte di risveglio → una sonda realtime (sola lettura). Lo schedule del
         # task DEVE avvenire sul loop: dal thread paho usa call_soon_threadsafe.
         if not was_awake:
@@ -925,13 +999,13 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._update({"last_wake": dt_util.utcnow()})
         # is_awake: se l'auto sta già pubblicando su MQTT non serve l'SMS.
         result = WAKE.do_wake(self.ctx, emit,
-                              is_awake=lambda: bool(self.data.get("awake")), send_sms=True)
+                              is_awake=self._auto_e_sveglia, send_sms=True)
         # [FALLBACK] smsAwaken inaffidabile (test 2026-06-21: A07900 due volte) → se non ha
         # svegliato l'auto, ripiega su un comando REALE (vehicleLocation), che la sveglia al
         # primo colpo e restituisce anche il GPS. A livello coordinator per non creare import
         # circolari (wake.py è importato da commands.py).
         if not (isinstance(result, dict) and result.get("online")):
-            if self.data.get("awake"):
+            if self._auto_e_sveglia():
                 return  # nel frattempo è arrivato un messaggio MQTT → già sveglia
             emit("Sveglia SMS non efficace → ripiego su Localizza (vehicleLocation)…")
             try:
@@ -1053,17 +1127,30 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         Gira nel thread executor: gli accessi a self.position sono serializzati col
         lock e si emette sempre una COPIA (no condivisione per riferimento)."""
         patch: dict = {"realtime": dict(data) if isinstance(data, dict) else data}
-        # [2.0] freschezza del frame auto: resultTime (epoch ms) → datetime tz-aware. Dice
-        # quanto è vecchio il dato batteria/odometro (ad auto ferma il frame resta lo stesso).
+        # Freschezza del dato batteria/odometro. NON si usa più `resultTime`: misurato il
+        # 22/07 che resta indietro mentre i valori cambiano davvero — resultTime fermo alle
+        # 08:37:37 con la batteria passata da 41% a 40% dopo le 08:59, e `time` a 09:01:59.
+        # Il sensore annunciava «dati vecchi di 24 minuti» mentre erano aggiornati, cioè
+        # esattamente il contrario del suo scopo. Si guarda invece il CONTENUTO: il
+        # timestamp avanza quando la telemetria cambia rispetto alla lettura precedente. Ad
+        # auto ferma resta indietro — ed è proprio quello che l'utente vuole sapere.
         if isinstance(data, dict):
-            for tk in ("resultTime", "collectTime", "time", "updateTime"):
-                raw = data.get(tk)
-                try:
-                    if raw not in (None, "", 0, "0"):
-                        patch["car_data_ts"] = dt_util.utc_from_timestamp(int(float(raw)) / 1000)
-                        break
-                except (TypeError, ValueError):
-                    continue
+            impronta = _impronta_telemetria(data)
+            if self._impronta_dati is None:
+                # Primo frame dopo l'avvio: non c'è nulla con cui confrontare. Si parte dal
+                # timestamp dichiarato dall'auto invece di spacciare per "adesso" un dato
+                # che potrebbe essere vecchio di ore.
+                for tk in ("resultTime", "collectTime", "time", "updateTime"):
+                    raw = data.get(tk)
+                    try:
+                        if raw not in (None, "", 0, "0"):
+                            patch["car_data_ts"] = dt_util.utc_from_timestamp(int(float(raw)) / 1000)
+                            break
+                    except (TypeError, ValueError):
+                        continue
+            elif impronta != self._impronta_dati:
+                patch["car_data_ts"] = dt_util.utcnow()
+            self._impronta_dati = impronta
         if isinstance(data, dict) and "lat" in data and "lon" in data:
             geo = {k: data[k] for k in GEO_KEYS if k in data}
             with self._state_lock:
@@ -1197,8 +1284,51 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             self._diag.record("session", ok=ok, status=status, detail=detail,
                               triggered_reauth=(status == SESSION_STATUS_EXPIRED))
         if status == SESSION_STATUS_EXPIRED:
+            self._avvisa_sessione_morta()
             self.entry.async_start_reauth(self.hass)
+        elif ok:
+            self._chiudi_avviso_sessione()
         return ok, detail
+
+    # ───────────────── avviso in Home Assistant (sessione da riautenticare) ─────────────────
+    # La sola card «Riautentica» è facile da non vedere: l'integrazione può restare ferma
+    # per ore senza che nessuno se ne accorga (è successo davvero). La notifica dice in
+    # chiaro COSA è rotto e COSA fare, e sparisce da sé quando la sessione torna viva.
+    @property
+    def _id_avviso(self) -> str:
+        return f"{DOMAIN}_sessione_{self.entry.entry_id}"
+
+    def _avvisa_sessione_morta(self) -> None:
+        from homeassistant.components import persistent_notification
+
+        auto = self.entry.data.get(CONF_VEHICLE_NAME) or self.vin or "Omoda 9 / Jaecoo"
+        if (self.hass.config.language or "en").split("-")[0] == "it":
+            titolo = f"{auto}: sessione scaduta"
+            testo = (
+                f"L'integrazione non riesce più a parlare con l'auto: comandi e sensori "
+                f"restano fermi finché non riautentichi.\n\n"
+                f"Vai su **Impostazioni → Dispositivi e servizi → Omoda 9 / Jaecoo → "
+                f"Riautentica** e scegli **«Inviami un codice nuovo»**: il codice arriverà "
+                f"a {self.email}.\n\n"
+                f"Nessun codice è stato inviato in automatico — parte solo se lo chiedi tu."
+            )
+        else:
+            titolo = f"{auto}: session expired"
+            testo = (
+                f"The integration can no longer talk to the car: commands and sensors "
+                f"stay frozen until you re-authenticate.\n\n"
+                f"Go to **Settings → Devices & services → Omoda 9 / Jaecoo → "
+                f"Reconfigure/Re-authenticate** and pick **“Send me a new code”**: it will "
+                f"be emailed to {self.email}.\n\n"
+                f"No code was sent automatically — one is only sent when you ask for it."
+            )
+        persistent_notification.async_create(
+            self.hass, testo, title=titolo, notification_id=self._id_avviso)
+
+    def _chiudi_avviso_sessione(self) -> None:
+        from homeassistant.components import persistent_notification
+
+        persistent_notification.async_dismiss(self.hass, self._id_avviso)
 
     def _check_session(self) -> tuple[bool, str, str]:
         from .core import session as SESSION
@@ -1213,15 +1343,19 @@ class Omoda9Coordinator(DataUpdateCoordinator):
     # ───────────────── recupero sessione (OTP da HA) ─────────────────
     async def async_request_otp(self) -> str:
         """Invia il codice OTP all'email dell'account (button «Richiedi OTP»)."""
-        return await self.hass.async_add_executor_job(self._request_otp)
+        _ok, detail = await self.hass.async_add_executor_job(self._request_otp)
+        return detail
 
-    def _request_otp(self) -> str:
+    def _request_otp(self) -> tuple[bool, str]:
+        """Ritorna (inviato, dettaglio). L'esito NON va perso: la riautenticazione deve
+        poter dire all'utente «il codice non è partito» invece di lasciarlo ad aspettare
+        una mail che non arriverà."""
         from .core import session as SESSION
         msgs: list[str] = []
-        SESSION.request_otp(self.ctx, emit=msgs.append)
-        detail = msgs[-1] if msgs else "richiesta inviata"
+        ok = bool(SESSION.request_otp(self.ctx, emit=msgs.append))
+        detail = msgs[-1] if msgs else ("richiesta inviata" if ok else "invio non riuscito")
         self._update({"session_detail": detail})
-        return detail
+        return ok, detail
 
     async def async_confirm_otp(self) -> tuple[bool, str]:
         """Conia il token col codice inserito (button «Conferma OTP») e ricontrolla la sessione."""

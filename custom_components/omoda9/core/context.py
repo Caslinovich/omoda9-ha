@@ -72,6 +72,18 @@ class _StatoVeicolo:
     # serializza il refresh del token: Chery ruota il refresh_token a ogni uso, due
     # rinnovi in parallelo sullo STESSO file invaliderebbero la sessione.
     lock_token: threading.Lock = field(default_factory=threading.Lock)
+    # Esito dell'ULTIMO rinnovo tentato (marcatore stabile, vedi wake._refresh_token_detail)
+    # + quando è stato tentato. Serve a `session.check` per distinguere «il server ha
+    # revocato il token» da «la rete non ha funzionato»: senza, un blip di rete si
+    # traveste da sessione morta e fa chiedere all'utente un OTP che non serviva.
+    refresh_motivo: str = ""
+    refresh_ts: float = 0.0
+    # Impronta (sha256) del refresh_token che il server ha ESPLICITAMENTE respinto, e
+    # quando. Serve a non ripresentare allo sportello una credenziale già rifiutata: il
+    # token non torna valido da solo, quindi ritentarlo a ogni chiamata è solo rumore
+    # verso il gateway Chery. Si azzera da sé appena il file contiene un token diverso.
+    refresh_bruciato: str = ""
+    refresh_bruciato_ts: float = 0.0
 
 
 @dataclass

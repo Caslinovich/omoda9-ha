@@ -47,6 +47,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # Il monitor diagnostico va armato PRIMA del primo controllo sessione. È quel
+    # controllo a decidere se aprire la riautenticazione, ed è esattamente l'evento che si
+    # vuole rileggere dopo un riavvio. Armandolo dopo (com'era) il controllo d'avvio non
+    # veniva mai registrato: verificato su 5 riavvii consecutivi, nel file diagnostico
+    # restava un buco proprio nel momento più interessante.
+    await coordinator.async_setup_diag()
+
     # stato sessione iniziale + avvio connessione MQTT all'auto
     await coordinator.async_check_session()
     # [H4] se QUALSIASI passo dell'avvio fallisce (connect MQTT, avvio timer, forward

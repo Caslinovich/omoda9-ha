@@ -8,34 +8,23 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ### 🇮🇹 Italiano
 
-- **La posizione dell'auto non compare più dove non deve.** Un messaggio di stato interno
-  scriveva le coordinate della macchina nel proprio testo, e quel messaggio finiva in tre
-  posti: nello storico dei dati di Home Assistant, nel file di «Scarica diagnostica» (quello
-  che puoi allegare a una segnalazione) e nel registro tecnico. Ora le coordinate vengono
-  tolte alla fonte: continuano ad alimentare la mappa dell'auto — che è il loro posto
-  giusto — ma spariscono da quel messaggio. Tutti gli altri dati (chilometri, batteria,
-  autonomia, temperatura) restano visibili come prima. **Se in passato hai inviato un file
-  di diagnostica**, può aver contenuto la posizione dell'auto in quel momento: da questa
-  versione non succede più.
-- **«Tempo di ricarica residuo» ora torna a "sconosciuto" quando l'auto non è in carica.**
-  Prima restava inchiodato all'ultimo valore (es. 120 minuti) anche a ricarica finita e
-  spina staccata, il che era fuorviante.
-- Nessuna funzione nuova e nessuna differenza nell'uso quotidiano: solo correzioni.
+- **Basta codici di verifica non richiesti.** Quando il collegamento con l'auto scadeva, l'integrazione spediva un'email col codice da sola — e lo rifaceva a ogni riavvio di Home Assistant. Ora nessun codice parte se non lo chiedi tu.
+- **Riautenticazione senza vicoli ciechi.** La pagina ti fa scegliere fra «Inviami un codice nuovo» e «Ho già un codice», e dopo un codice sbagliato ti riporta lì: puoi sempre chiederne un altro.
+- **Un avviso quando serve il tuo intervento.** Se il collegamento scade compare una notifica che spiega cosa fare, e sparisce da sola quando tutto torna a posto.
+- **Collegamento più stabile.** Si rinnova con ore di anticipo invece che all'ultimo momento, non insiste quando il servizio dell'auto rifiuta, e una connessione ballerina non ti fa più sprecare un codice.
+- **Il pulsante «Sveglia auto» torna a funzionare.** In certi casi rispondeva «auto già sveglia» senza fare nulla.
+- **Sensori più onesti.** «Dati auto aggiornati» ora segna quando i dati cambiano davvero; «Autonomia combinata» era in realtà l'autonomia a benzina in miglia ed è stata rinominata e corretta; «Tempo di ricarica residuo» torna a "sconosciuto" fuori dalla ricarica.
+- **Più riservatezza.** La posizione dell'auto non finisce più nello storico, nel file di diagnostica né nel registro tecnico: continua ad alimentare solo la mappa.
 
 ### 🇬🇧 English
 
-- **The car's location no longer shows up where it shouldn't.** An internal status message
-  wrote the car's coordinates into its own text, and that message ended up in three places:
-  Home Assistant's data history, the «Download diagnostics» file (the one you can attach to
-  a report), and the technical log. The coordinates are now removed at the source: they
-  still feed the car's map — which is where they belong — but they disappear from that
-  message. Every other value (mileage, battery, range, temperature) stays visible as before.
-  **If you sent a diagnostics file in the past**, it may have contained the car's location
-  at that moment: from this version it no longer does.
-- **«Remaining charge time» now returns to "unknown" when the car isn't charging.** It used
-  to stay stuck on the last value (e.g. 120 minutes) even after charging ended and the plug
-  was removed, which was misleading.
-- No new features and no difference in day-to-day use: fixes only.
+- **No more verification codes you didn't ask for.** When the connection to the car expired, the integration emailed a code by itself — and did it again at every Home Assistant restart. Now no code is sent unless you ask for one.
+- **Re-authentication without dead ends.** The page lets you choose between "Send me a new code" and "I already have a code", and after a wrong code it takes you back there, so you can always request another.
+- **A notification when you need to step in.** If the connection expires, a notification explains what to do, and it disappears on its own once everything is back.
+- **A more stable connection.** It renews hours in advance instead of at the last moment, stops insisting when the car service refuses, and a flaky connection no longer makes you waste a code.
+- **The "Wake car" button works again.** In some cases it replied "car already awake" and did nothing.
+- **More honest sensors.** "Car data updated" now marks when the data really changes; "Combined range" was actually the petrol range in miles and has been renamed and corrected; "Remaining charge time" returns to "unknown" when not charging.
+- **More privacy.** The car's location no longer ends up in history, in the diagnostics file or in the technical log: it only feeds the map.
 
 ## v1.6.1 — 2026-07-20
 

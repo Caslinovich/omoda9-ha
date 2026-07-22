@@ -47,7 +47,7 @@ from .entity import Omoda9Entity
 # CVRealtimeResBean dell'SDK Chery. Una tabella di spec evita 20+ classi gemelle.
 #
 # Valori/unità CONFERMATI dal vivo ad auto sveglia (2026-06-21, 84 campi):
-#   pureElectricRange=60 km · mileageSurplus=215 km (totale) · cruiseRange=134 (stima)
+#   pureElectricRange=60 km · mileageSurplus=215 km (benzina) · cruiseRange=134 (=215 km in miglia)
 #   lFrontTyreKpa=292 (=42 psi) → kPa · gomme temp 34-35 °C · *TyreCall/socLowCall=0=ok
 #   oilSurplus=23 → LITRI (215−60=155 km a benzina /23 L ≈ 15 L/100km) · averageFuel=0.0
 #   avgHkPowerKwh50km=20.6 → kWh/100km · totalVoltage=323.1 V · totalCurrent=0.0 A (HV reali!)
@@ -55,6 +55,7 @@ from .entity import Omoda9Entity
 
 C = UnitOfTemperature.CELSIUS
 KM = UnitOfLength.KILOMETERS
+MIGLIA = UnitOfLength.MILES   # unità NATIVA di cruiseRange (vedi _RT_SENSORS)
 KPA = UnitOfPressure.KPA
 BAR = UnitOfPressure.BAR
 MIN = UnitOfTime.MINUTES
@@ -110,11 +111,12 @@ def _range_totale(rt: dict):
     """Autonomia totale REALE = elettrica (`pureElectricRange`) + benzina (`mileageSurplus`).
     None se manca un pezzo → resta l'ultimo valore noto (RestoreSensor).
 
-    ⚠️ NON usare `cruiseRange` come totale: il dump head unit lo dava per il combinato
-    del cruscotto (ID_DISPLAY_MILEAGE), ma la cattura live SMENTISCE: `cruiseRange`=134
-    è rimasto INVARIATO tra 2026-06-21 (elettrica=60) e 2026-06-25 (elettrica=116) mentre
-    l'autonomia elettrica cambiava → è un valore statico/nominale, non il totale live.
-    La somma elettrica+benzina segue lo stato batteria → è la scelta corretta."""
+    ⚠️ NON usare `cruiseRange` come totale: il dump head unit lo dava per il combinato del
+    cruscotto (ID_DISPLAY_MILEAGE), ma è falso. Sembrava "statico" perché non seguiva
+    l'autonomia elettrica; il 2026-07-22 si è capito il perché — è l'autonomia BENZINA in
+    miglia (182 km/1,609 = 113 e 215 km/1,609 = 134, due campioni a un mese di distanza).
+    Quindi non contiene affatto la parte elettrica. La somma elettrica+benzina segue lo
+    stato batteria → è la scelta corretta."""
     try:
         return float(rt["pureElectricRange"]) + float(rt["mileageSurplus"])
     except (TypeError, ValueError, KeyError):
@@ -131,14 +133,24 @@ _RT_SENSORS: list[_RtSpec] = [
     _RtSpec("range_benzina", "Autonomia benzina", "mileageSurplus",
             DIST, KM, MEAS, "mdi:gas-station"),
     # Autonomia TOTALE = elettrica + benzina (campo CALCOLATO). Vedi _range_totale.
-    # (cruiseRange NON usato come totale: smentito dalla cattura live, è statico — vedi sotto.)
+    # (cruiseRange NON usato come totale: è l'autonomia benzina in miglia — vedi sotto.)
     _RtSpec("range_totale", "Autonomia totale", "",
             DIST, KM, MEAS, "mdi:map-marker-distance", compute=_range_totale),
-    # cruiseRange = valore "combinato" grezzo del cloud → diagnostico. ⚠️ Osservato STATICO
-    # (134 km sia il 21/06 sia il 25/06 con elettrica 60→116) → semantica incerta, tenuto
-    # solo come diagnostico, NON usato per l'autonomia totale.
-    _RtSpec("range_combinato", "Autonomia combinata (stima)", "cruiseRange",
-            DIST, KM, MEAS, "mdi:map-marker-distance", diag=True),
+    # cruiseRange = `mileageSurplus` (autonomia benzina) espresso in MIGLIA. RISOLTO il
+    # 2026-07-22 confrontando due campioni a un mese di distanza:
+    #     182 km / 1,609344 = 113,09  →  cruiseRange 113   (22/07)
+    #     215 km / 1,609344 = 133,59  →  cruiseRange 134   (21/06)
+    # Ecco perché sembrava "statico": non lo era, si muoveva in lockstep con l'autonomia
+    # benzina. Non è quindi una stima combinata e NON va usato per l'autonomia totale — è
+    # lo stesso dato in un'altra unità (di qui il campo `rangeUnit` che l'auto invia).
+    # Tenuto come diagnostico: conferma dal vivo l'unità di misura scelta dal cloud.
+    # Dichiarare l'unità VERA (miglia) non è un dettaglio: con `device_class`
+    # distanza è Home Assistant a convertire per l'utente, quindi il sensore
+    # mostrerà ~182 km invece di un "113 km" che sarebbe semplicemente falso.
+    # precision=0: la conversione miglia→km produce 181,855872, sei decimali di
+    # falsa precisione su un dato che l'auto manda arrotondato all'unità.
+    _RtSpec("range_combinato", "Autonomia benzina (miglia)", "cruiseRange",
+            DIST, MIGLIA, MEAS, "mdi:map-marker-distance", diag=True, precision=0),
     _RtSpec("odometro", "Odometro", "odometer",
             DIST, KM, TOTAL, "mdi:counter"),
     _RtSpec("km_ibrido", "Chilometraggio ibrido", "hybridMileage",

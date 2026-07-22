@@ -237,3 +237,124 @@ async def test_repair_senza_entry_si_interrompe(hass):
     result = await flow.async_step_init()
     assert result["type"] is data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "entry_not_found"
+
+
+# ───────────────────── riautenticazione: nessun OTP non richiesto ─────────────────────
+# Episodio reale del 21/07/2026: la sessione è morta alle 22:21 e all'utente sono
+# arrivate TRE mail con codice OTP che non aveva chiesto. Una per la scadenza, due
+# per altrettanti riavvii di Home Assistant — perché il flow di reauth si ricrea a
+# ogni avvio finché la sessione è morta, e all'epoca spediva un codice appena aperto.
+# In più il reinvio era nascosto dietro «lascia il campo vuoto e conferma», che il
+# frontend rifiuta perché il campo è obbligatorio: l'utente restava con in mano solo
+# un codice ormai scaduto e nessun modo di chiederne un altro.
+
+
+@pytest.fixture
+def spia_otp(hass, integrazione_avviata, monkeypatch):
+    """Conta gli invii di OTP e permette di pilotare l'esito di invio/conferma."""
+    coord = hass.data[DOMAIN][integrazione_avviata.entry_id]
+    stato = {"inviati": 0, "invio_ok": True, "codice_giusto": "123456"}
+
+    def _request_otp():
+        stato["inviati"] += 1
+        return stato["invio_ok"], ("codice inviato" if stato["invio_ok"]
+                                   else "invio non riuscito")
+
+    def _confirm_otp(code):
+        giusto = code == stato["codice_giusto"]
+        return giusto, ("token coniato" if giusto else "codice errato")
+
+    monkeypatch.setattr(coord, "_request_otp", _request_otp)
+    monkeypatch.setattr(coord, "_confirm_otp", _confirm_otp)
+    return stato
+
+
+async def _apri_reauth(hass, entry):
+    """Apre la riautenticazione come fa Home Assistant quando la sessione muore."""
+    return await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_REAUTH, "entry_id": entry.entry_id},
+        data=dict(entry.data),
+    )
+
+
+async def test_aprire_la_riautenticazione_non_manda_nessun_otp(
+        hass, integrazione_avviata, spia_otp):
+    """LA regressione da bloccare: aprire la pagina non deve spedire niente."""
+    result = await _apri_reauth(hass, integrazione_avviata)
+    assert result["type"] is data_entry_flow.FlowResultType.MENU
+    assert spia_otp["inviati"] == 0, "aprire la reauth ha spedito un OTP non richiesto"
+
+
+async def test_riavvii_ripetuti_non_generano_mail(hass, integrazione_avviata, spia_otp):
+    """Tre aperture del flow (= tre riavvii di HA a sessione morta) = zero mail."""
+    for _ in range(3):
+        result = await _apri_reauth(hass, integrazione_avviata)
+        hass.config_entries.flow.async_abort(result["flow_id"])
+    assert spia_otp["inviati"] == 0
+
+
+async def test_il_codice_parte_solo_su_richiesta_esplicita(
+        hass, integrazione_avviata, spia_otp):
+    """L'unico modo di far partire un OTP è chiederlo dal menu."""
+    result = await _apri_reauth(hass, integrazione_avviata)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "send_code"})
+    assert spia_otp["inviati"] == 1
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "enter_code"
+
+
+async def test_codice_sbagliato_non_lascia_in_trappola(
+        hass, integrazione_avviata, spia_otp):
+    """Dopo un codice rifiutato si torna al menu, da cui se ne può chiedere uno nuovo.
+
+    È il vicolo cieco in cui l'utente è finito davvero: codice scaduto in mano e
+    nessun pulsante per farsene mandare un altro."""
+    result = await _apri_reauth(hass, integrazione_avviata)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "send_code"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"code": "000000"})
+    assert result["type"] is data_entry_flow.FlowResultType.MENU
+    assert spia_otp["inviati"] == 1, "un codice errato non deve reinviare da solo"
+
+    # ...e da qui il codice nuovo si può chiedere, con un tap
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "send_code"})
+    assert spia_otp["inviati"] == 2
+    assert result["step_id"] == "enter_code"
+
+
+async def test_invio_fallito_torna_al_menu_col_motivo(
+        hass, integrazione_avviata, spia_otp):
+    """Se la mail non parte l'utente deve saperlo, non restare ad aspettarla."""
+    spia_otp["invio_ok"] = False
+    result = await _apri_reauth(hass, integrazione_avviata)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "send_code"})
+    assert result["type"] is data_entry_flow.FlowResultType.MENU
+    assert "invio non riuscito" in result["description_placeholders"]["reason"]
+
+
+async def test_riautenticazione_riuscita(hass, integrazione_avviata, spia_otp):
+    """Il percorso felice: codice giusto → entry ricaricato."""
+    result = await _apri_reauth(hass, integrazione_avviata)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "send_code"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"code": "123456"})
+    await hass.async_block_till_done()
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+
+
+async def test_si_puo_inserire_un_codice_gia_in_mano(
+        hass, integrazione_avviata, spia_otp):
+    """Chi ha già un codice valido non deve essere costretto a farsene mandare un altro."""
+    result = await _apri_reauth(hass, integrazione_avviata)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "enter_code"})
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "enter_code"
+    assert spia_otp["inviati"] == 0

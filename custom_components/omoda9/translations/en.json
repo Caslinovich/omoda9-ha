@@ -38,7 +38,15 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate Omoda 9 / Jaecoo",
-        "description": "The session expired (for example because the official app was opened). A new verification code was sent to {email}. Enter it below to restore access. Leave the field empty and submit to resend the code.{reason}",
+        "description": "The session has expired: until you re-authenticate, the integration cannot talk to the car and commands and sensors stay frozen.\n\n**No code has been sent automatically.** Choose “Send me a new code” to have a fresh one emailed to {email}.{reason}",
+        "menu_options": {
+          "send_code": "Send me a new code by email",
+          "enter_code": "I already have a valid code"
+        }
+      },
+      "enter_code": {
+        "title": "Enter the verification code",
+        "description": "Enter the code just emailed to {email}. Codes expire after a few minutes: if it is rejected you can go back and request a new one.{reason}",
         "data": {
           "code": "OTP code"
         }
@@ -48,7 +56,8 @@
       "otp_send_failed": "Could not send the OTP code. Check the email/PIN and try again.",
       "otp_invalid": "Invalid or expired OTP code.",
       "no_vehicle": "Login succeeded but no vehicle was found on this account.",
-      "pin_required": "Enter the vehicle control PIN."
+      "pin_required": "Enter the vehicle control PIN.",
+      "otp_required": "Enter the code you received by email."
     },
     "abort": {
       "already_configured": "This vehicle (VIN) is already configured.",
@@ -257,8 +266,8 @@
       "autonomia_benzina": {
         "name": "Fuel range"
       },
-      "autonomia_combinata_stima": {
-        "name": "Combined range (estimate)"
+      "autonomia_benzina_miglia": {
+        "name": "Petrol range (miles)"
       },
       "autonomia_elettrica": {
         "name": "Electric range"

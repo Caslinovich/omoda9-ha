@@ -25,7 +25,7 @@ riga-sentinella stabile `RESULT: OK` / `RESULT: FAIL` e usano il returncode (0 o
 errore). request_otp/confirm_otp decidono l'esito su returncode + sentinella, NON su
 sottostringhe localizzate (che cambierebbero con la lingua dei messaggi).
 """
-import os, sys, subprocess
+import os, sys, subprocess, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -44,6 +44,14 @@ STATUS_OK = "OK"                # login BFF riuscito col token attuale
 STATUS_EXPIRED = "EXPIRED"      # token/sessione morti → serve un OTP nuovo (reauth)
 STATUS_NET_ERROR = "NET_ERROR"  # errore di rete/transitorio → NON è una sessione scaduta
 
+# Quanto a lungo il motivo dell'ultimo rinnovo resta attendibile per decidere il rimedio.
+# Rinnovo e controllo sessione avvengono nello stesso giro (frazioni di secondo): un
+# motivo più vecchio di così parla di un altro tentativo e va ignorato.
+_MOTIVO_FRESCO_S = 60.0
+# Frazione di vita del token oltre la quale si rinnova in anticipo (0.8 = a 9h36m su 12h):
+# abbastanza presto da avere margine, abbastanza tardi da non sprecare rinnovi.
+QUOTA_RINNOVO = 0.8
+
 
 def check(ctx):
     """Ritorna (ok: bool, dettaglio: str, status: str).
@@ -58,8 +66,19 @@ def check(ctx):
         return False, f"errore rete: {type(e).__name__}", STATUS_NET_ERROR
     if ut:
         return True, "Sessione attiva ✅", STATUS_OK
+    # Il login è fallito. Ma se è fallito perché il RINNOVO non è nemmeno partito (rete
+    # giù, timeout, DNS), la sessione può benissimo essere ancora viva di là: dichiararla
+    # scaduta farebbe comparire la card «Riautentica» e brucerebbe un OTP per niente.
+    # Ci si fida del marcatore solo se è FRESCO: uno vecchio si riferisce a un altro giro.
+    try:
+        motivo = ctx.stato.refresh_motivo or ""
+        fresco = (time.time() - (ctx.stato.refresh_ts or 0.0)) < _MOTIVO_FRESCO_S
+    except Exception:  # noqa: BLE001 — contesti ridotti nei test/diagnostica
+        motivo, fresco = "", False
+    if fresco and motivo.startswith("rete:"):
+        return False, f"rinnovo non riuscito per la rete ({motivo[5:]})", STATUS_NET_ERROR
     return (False,
-            "Sessione scaduta ❌ — premi «Richiedi codice OTP» (app ufficiale chiusa)",
+            "Sessione scaduta ❌ — riautentica da Home Assistant e chiedi un codice nuovo",
             STATUS_EXPIRED)
 
 
@@ -69,6 +88,29 @@ def refresh(ctx):
         return bool(wake._refresh_token(ctx))
     except Exception:
         return False
+
+
+def refresh_se_prossimo_a_scadere(ctx, quota: float = QUOTA_RINNOVO) -> tuple[bool, str]:
+    """Rinnovo PROATTIVO: rinnova quando l'access token ha consumato `quota` della sua
+    vita, invece di aspettare che sia già morto.
+
+    Perché non basta il rinnovo reattivo: il controllo sessione gira ogni 15 minuti, e
+    quello reattivo scatta solo DOPO che il token è scaduto — cioè fino a un quarto d'ora
+    in ritardo, con la finestra del refresh_token già in chiusura. Anticipando si rinnova
+    sempre con la sessione ancora viva; e se il rinnovo fallisce lo si scopre mentre c'è
+    ancora tempo, invece che a sessione già morta.
+
+    Ritorna (rinnovato, motivo). `(False, "non_serve")` = non era ora, nessuna chiamata.
+    Non solleva mai: è un'ottimizzazione, non deve poter rompere il keep-alive."""
+    try:
+        eta, durata = wake._eta_token(ctx)
+        if eta < 0 or durata <= 0:
+            return False, "non_determinabile"
+        if eta < durata * quota:
+            return False, "non_serve"
+        return wake._refresh_token_detail(ctx)
+    except Exception as e:  # noqa: BLE001
+        return False, f"rete:{type(e).__name__}"
 
 
 def _timeout() -> int:

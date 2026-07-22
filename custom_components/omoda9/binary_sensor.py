@@ -157,7 +157,10 @@ class Omoda9Awake(Omoda9Entity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return bool(self.coordinator.data.get("awake"))
+        # Si chiede al coordinator lo stato REALE (tempo trascorso dall'ultimo messaggio)
+        # invece di leggere il flag memorizzato: così il sensore è corretto anche nella
+        # finestra fra la scadenza e il timer che aggiorna il flag.
+        return self.coordinator._auto_e_sveglia()
 
 
 class Omoda9Session(_Omoda9RestoreBinary):
