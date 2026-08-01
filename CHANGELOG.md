@@ -6,6 +6,30 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.7.1 — 2026-08-02
+
+### 🇮🇹 Italiano
+
+- **La carica della batteria non torna più indietro da sola.** Appena finita la ricarica l'auto spegne l'impianto elettrico e manda un'ultima lettura "a vuoto": la percentuale che contiene è sbagliata e restava lì per ore. Capitava di vedere 97% in Home Assistant mentre sull'auto c'era 100%. Ora quelle letture vengono riconosciute e scartate.
+- **Stessa cosa per l'autonomia.** L'autonomia elettrica non scende più a 0 km, e quella totale non perde di colpo un centinaio di chilometri, quando l'auto è solo a riposo.
+- **Quando un dato manca, si tiene l'ultimo vero.** Prima in quei casi poteva ricomparire un valore vecchio, fermo all'ultimo riavvio di Home Assistant: ora si torna sempre all'ultima lettura davvero arrivata dall'auto.
+- **«Raffredda tutto» e «Riscalda tutto» partono molto prima.** Se l'auto è già sveglia il comando parte quasi subito, invece di aspettare quasi un minuto come faceva sempre: quell'attesa serviva solo a svegliare un'auto addormentata, e ora si fa soltanto quando serve davvero.
+- **Basta l'errore «auto occupata» quando si preme due volte.** Chi non vedeva succedere nulla ripremeva il tasto, i due comandi si accavallavano e l'auto rifiutava il secondo. Ora il secondo comando aspetta sul serio il suo turno.
+- **Il messaggio finale dice le cose come stanno.** Quando l'auto avvia il clima ma non i sedili ventilati, ora si legge che il comando è riuscito solo in parte e quali parti hanno fatto storie, invece di un allarme generico seguito da una sfilza di numeri.
+- **Niente più falso allarme quando si spegne il clima.** Spegnendo, l'auto manda sempre una nota sul clima che non segnala alcun guasto: veniva scambiata per un problema, così compariva un avviso anche quando tutto era andato benissimo. Ora quella nota, da sola, non fa più scattare nessun allarme.
+- **I sedili hanno un nome.** Nel riepilogo di un comando riuscito a metà si legge «sedile guida riscaldato» o «sedile guida ventilato» invece di un anonimo «modulo 4».
+
+### 🇬🇧 English
+
+- **The battery percentage no longer drops back on its own.** Right after charging ends the car shuts down its electrical system and sends one last "empty" reading: the percentage in it is wrong, and it used to stay on screen for hours. You could see 97% in Home Assistant while the car itself showed 100%. Those readings are now recognised and discarded.
+- **Same for the range.** The electric range no longer falls to 0 km, and the total range no longer loses a hundred kilometres at once, just because the car is resting.
+- **When a reading is missing, the last real one is kept.** Before, an old value could reappear — the one frozen at the last Home Assistant restart. Now it always falls back to the most recent reading actually received from the car.
+- **"Cool everything" and "Heat everything" start much sooner.** If the car is already awake the command goes out almost immediately, instead of always waiting nearly a minute: that wait was only there to rouse a sleeping car, and now it happens only when it is actually needed.
+- **No more "car busy" error when you press twice.** People who saw nothing happening pressed again, the two commands overlapped and the car rejected the second one. Now the second command really does wait its turn.
+- **The final message tells it straight.** When the car starts the climate control but not the ventilated seats, you now read that the command only partly succeeded and which parts refused, instead of a generic alarm followed by a string of numbers.
+- **No more false alarm when you switch the climate off.** On every switch-off the car sends a note about the climate control that reports no fault at all: it was being read as a problem, so a warning appeared even when everything had gone perfectly. That note on its own no longer raises any alarm.
+- **The seats have names.** In the summary of a partly successful command you now read "driver seat heating" or "driver seat ventilation" instead of an anonymous "module 4".
+
 ## v1.7.0 — 2026-07-22
 
 ### 🇮🇹 Italiano
