@@ -145,6 +145,94 @@ async def test_autonomia_in_miglia_dichiara_l_unita_giusta(hass, integrazione_av
     assert "miglia" in spec.name.lower()
 
 
+# ───────── frame degradato: 0 km di autonomia elettrica = tutto il frame è da buttare ─────────
+# Trovato in campo il 2026-07-31. Ricarica chiusa all'01:31 con 100% e 150 km; all'01:33,
+# spenta l'alta tensione, arriva un frame con 97% e 0 km e il cloud lo ripete per 7 ore.
+# L'utente vedeva 97% in HA e 100% sull'auto. La protezione che c'era scartava solo lo 0%,
+# quindi un 97% "plausibile" passava indisturbato.
+
+# Frame realtime nella forma in cui arrivano davvero: il degradato differisce dal buono
+# SOLO per i due campi incriminati, così il test misura il criterio e non altro.
+_CARICA_FINITA = {"odometer": "4062", "dumpEnergy": "100", "pureElectricRange": "150",
+                  "mileageSurplus": "125", "chargeState": "2"}
+_DEGRADATO = {"odometer": "4062", "dumpEnergy": "97", "pureElectricRange": "0",
+              "mileageSurplus": "125", "chargeState": "0"}
+
+
+async def test_batteria_ignora_il_frame_con_zero_km(hass, integrazione_avviata):
+    """Il fix: dopo il 100% a carica finita, il frame degradato NON deve riportare a 97%."""
+    coord = _coord(hass, integrazione_avviata)
+
+    await _push_realtime(hass, coord, _CARICA_FINITA)
+    assert hass.states.get("sensor.omoda9_batteria").state == "100.0"
+
+    await _push_realtime(hass, coord, _DEGRADATO)
+    assert hass.states.get("sensor.omoda9_batteria").state == "100.0", (
+        "il segnaposto a 0 km ha sovrascritto la carica reale"
+    )
+
+
+async def test_autonomie_ignorano_il_frame_con_zero_km(hass, integrazione_avviata):
+    """Stesso frame, stesso danno: l'autonomia elettrica andava a 0 km e la totale
+    crollava di 150 km (251 → 125) per tutta la notte."""
+    coord = _coord(hass, integrazione_avviata)
+
+    await _push_realtime(hass, coord, _CARICA_FINITA)
+    await _push_realtime(hass, coord, _DEGRADATO)
+
+    assert hass.states.get("sensor.omoda9_autonomia_elettrica").state == "150.0"
+    assert hass.states.get("sensor.omoda9_autonomia_totale").state == "275.0"
+
+
+async def test_una_carica_che_scende_davvero_passa(hass, integrazione_avviata):
+    """Il rovescio, ed è il rischio vero di questa protezione: un calo LEGITTIMO (guida)
+    deve passare. Il criterio è lo 0 km, non «la carica è scesa» — se fosse quello,
+    l'auto guidata resterebbe inchiodata alla percentuale della partenza."""
+    coord = _coord(hass, integrazione_avviata)
+
+    await _push_realtime(hass, coord, _CARICA_FINITA)
+    await _push_realtime(hass, coord, {**_CARICA_FINITA, "dumpEnergy": "62",
+                                       "pureElectricRange": "93"})
+
+    assert hass.states.get("sensor.omoda9_batteria").state == "62.0"
+    assert hass.states.get("sensor.omoda9_autonomia_elettrica").state == "93.0"
+
+
+async def test_il_criterio_non_scatta_se_manca_il_campo(hass, integrazione_avviata):
+    """Campo assente ≠ campo a zero. Una lettura parziale senza `pureElectricRange` non
+    deve essere scambiata per degradata, altrimenti la batteria smetterebbe di aggiornarsi
+    ogni volta che il cloud manda un frame ridotto."""
+    from custom_components.omoda9.sensor import _frame_batteria_degradato
+
+    assert _frame_batteria_degradato({"dumpEnergy": "97"}) is False
+    assert _frame_batteria_degradato({"pureElectricRange": "0"}) is True
+    assert _frame_batteria_degradato({"pureElectricRange": "12"}) is False
+
+    coord = _coord(hass, integrazione_avviata)
+    await _push_realtime(hass, coord, _CARICA_FINITA)
+    await _push_realtime(hass, coord, {"odometer": "4062", "dumpEnergy": "62"})
+    assert hass.states.get("sensor.omoda9_batteria").state == "62.0"
+
+
+async def test_il_ripiego_e_l_ultima_lettura_non_quella_dell_avvio(hass, integrazione_avviata):
+    """«Tieni l'ultimo valore noto» deve valere sull'ultima lettura VERA, non su quella
+    ripristinata all'avvio di HA.
+
+    Il ripiego era il solo valore ripristinato, fotografato una volta all'avvio e mai più
+    aggiornato: con HA acceso da giorni un segnaposto non riportava all'ultima lettura buona
+    ma a quella di giorni prima. Qui `_restored` = 20% (l'avvio), poi l'auto legge davvero
+    47% e infine manda un segnaposto: deve restare 47, non tornare a 20."""
+    coord = _coord(hass, integrazione_avviata)
+    _entita(hass, "sensor.omoda9_batteria")._restored = 20.0
+
+    await _push_realtime(hass, coord, {**_CARICA_FINITA, "dumpEnergy": "47",
+                                       "pureElectricRange": "71"})
+    assert hass.states.get("sensor.omoda9_batteria").state == "47.0"
+
+    await _push_realtime(hass, coord, _DEGRADATO)
+    assert hass.states.get("sensor.omoda9_batteria").state == "47.0"
+
+
 async def test_ogni_entita_ha_un_nome_tradotto(hass, integrazione_avviata):
     """Il nome mostrato NON viene dal codice Python: viene da `strings.json`, con una chiave
     ricavata dallo slug del nome. Rinominare un'entità senza spostare anche la chiave la fa

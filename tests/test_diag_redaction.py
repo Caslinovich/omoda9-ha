@@ -120,6 +120,31 @@ def test_recorder_buffer_and_file_are_redacted():
         rec.close()
 
 
+def test_cmd_ack_registra_i_codici_ma_non_i_segreti():
+    """Il push di conferma GREZZO (`cmd_ack`) finisce nel file: va registrato per intero
+    — i codici in `reason` sono l'unico modo per capire a posteriori perché una macro
+    comfort è riuscita a metà — ma resta soggetto alla redazione come tutto il resto.
+
+    Il rischio concreto è il `seq`, che porta il VIN, e una posizione che l'auto
+    infilasse nel payload di conferma: entrambi devono sparire senza portarsi via i
+    codici, che sono il motivo per cui l'evento esiste."""
+    rec = _recorder()
+    try:
+        rec.record("cmd_ack", svc="110C", result="1",
+                   reason=[{"code": "11", "modelId": "0"}, {"code": "1", "modelId": "9"}],
+                   data={"result": "1", "seq": f"{VIN}-1721390000",
+                         "frontHVACState": "1", "lat": "40.906483"})
+        rec.close()
+        with open(rec.path, encoding="utf-8") as fh:
+            content = fh.read()
+        _assert_clean(content, "cmd_ack nel file jsonl")
+        assert "40.906483" not in content, "posizione dentro un push di conferma"
+        assert '"modelId": "0"' in content, "i codici del reason sono il senso dell'evento"
+        assert '"frontHVACState": "1"' in content, "lo stato dei moduli deve restare"
+    finally:
+        rec.close()
+
+
 def test_coordinate_redatte_anche_sotto_una_chiave_qualsiasi():
     """Regressione del 2026-07-20 — la fuga vera, trovata analizzando il file di campo.
 

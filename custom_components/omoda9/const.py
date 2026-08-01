@@ -137,6 +137,13 @@ DRIVE_WATCH_EVERY = 180     # secondi tra due controlli "sei in marcia?" (sola l
 # bus comfort. Verificato dal vivo 2026-06-21: con ~35s il comando macro va a buon fine; con
 # 14s falliva (timeout TBOX↔centraline). Sotto questo valore le macro tornano a dare errore.
 MACRO_WAKE_WAIT = 35
+# ...ma quei 35s servono solo se l'auto DORME. Se sta già pubblicando su MQTT il bus comfort è
+# alimentato: la sveglia è inutile e l'attesa è dannosa. Misurato sul campo 2026-07-21…31: fra
+# pressione del tasto e conferma passavano 45-50s, in cui l'interruttore risultava già acceso e
+# non succedeva nulla di visibile → l'utente ripremeva, il secondo comando si accavallava al primo
+# e l'auto rifiutava con A00082 (6 casi su 22 cicli). Ad auto desta si salta la sveglia e si
+# attende solo questo margine breve, il tempo che l'eventuale comando precedente si esaurisca.
+MACRO_WAKE_WAIT_AWAKE = 5
 # durata del preset comfort (coolingControl/heatingControl usano duration/times = 15 min):
 # l'auto lo spegne da sola dopo questo tempo → lo switch macro torna OFF da solo per non
 # restare "acceso" a vuoto. +60s di margine.
@@ -147,7 +154,13 @@ MACRO_PRESET_S = 15 * 60 + 60
 # essere rifiutato. Dopo un invio si lascia respirare l'auto fino alla sua conferma MQTT o al
 # più COMMAND_SETTLE_S, così il prossimo della coda non parte mentre è ancora occupata.
 # COMMAND_QUEUE_WAIT limita l'attesa in coda: oltre, il comando fallisce con un messaggio chiaro.
-COMMAND_SETTLE_S = 5
+#
+# ⚠️ Il valore va tenuto SOPRA il tempo di conferma reale, altrimenti la pausa scade prima che
+# l'auto abbia risposto e il comando successivo parte comunque a vettura occupata. Misurato sui
+# push di conferma di luglio 2026: 11-14s quando la macro comfort riesce, 8-10s quando riesce a
+# metà — 5s (il vecchio valore) scadeva SEMPRE prima. Serve anche il taglio dall'altro lato:
+# `_settle_after_command` ora aspetta la conferma VERA e non un messaggio qualsiasi (vedi lì).
+COMMAND_SETTLE_S = 15
 COMMAND_QUEUE_WAIT = 30
 
 # Monitor diagnostico per lo SVILUPPATORE (vedi diag.py). Non è una funzione utente: non

@@ -28,7 +28,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, MACRO_WAKE_WAIT, MACRO_PRESET_S
+from .const import DOMAIN, MACRO_WAKE_WAIT, MACRO_WAKE_WAIT_AWAKE, MACRO_PRESET_S
 from .entity import Omoda9Entity, Omoda9OptimisticMixin, field_on
 
 
@@ -186,6 +186,8 @@ class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, 
     MACRO_WAKE_WAIT secondi che la TBOX alimenti il bus comfort, POI invia il comando — su
     ENTRAMBE le direzioni (anche lo spegnimento sveglia, così "tutto OFF" arriva ai sedili
     posteriori, che sono indipendenti dal clima). Verificato dal vivo 2026-06-21.
+    Se però l'auto è GIÀ desta la sveglia si salta (vedi `_wake_then`): il bus comfort è già
+    alimentato e quei 35 secondi sarebbero solo attesa a vuoto.
 
     Stato: l'auto NON pubblica uno stato "preset attivo" dedicato → interruttore a stato
     proprio (ottimistico PERSISTENTE: non viene azzerato dai messaggi telemetria, altrimenti
@@ -236,16 +238,28 @@ class Omoda9ClimaMacroSwitch(Omoda9OptimisticMixin, Omoda9Entity, SwitchEntity, 
         self._restored = value
 
     async def _wake_then(self, cmd: str, target: bool) -> None:
-        """Sveglia l'auto, attende che i moduli comfort siano alimentati, poi invia il comando.
-        I due invii passano dalla coda comandi del coordinator (uno alla volta, in ordine)."""
+        """Sveglia l'auto SE dorme, attende che i moduli comfort siano alimentati, poi invia
+        il comando. I due invii passano dalla coda comandi del coordinator (uno alla volta,
+        in ordine).
+
+        La sveglia si salta a vettura già desta: se sta pubblicando su MQTT il bus comfort è
+        già alimentato, quindi il `localizza` non serve a nulla e i 35 secondi di attesa sono
+        solo ritardo. Erano il vero motivo per cui la macro «non partiva»: 45-50 secondi fra
+        il tocco e la conferma, con l'interruttore già acceso e nessun segno di vita → si
+        ripremeva, i due cicli si accavallavano e l'auto rifiutava il secondo (A00082).
+        Ad auto desta il ciclo scende a ~10-15 secondi."""
         self._cancel_expire()
         self._set_state(target)
-        # sveglia (vehicleLocation = sveglia + GPS, benigno); non bloccare la macro se fallisce
-        try:
-            await self.coordinator.async_send_command("localizza")
-        except Exception:  # noqa: BLE001
-            pass
-        await asyncio.sleep(MACRO_WAKE_WAIT)  # lascia accendere il bus comfort
+        if self.coordinator.auto_sveglia:
+            attesa = MACRO_WAKE_WAIT_AWAKE
+        else:
+            attesa = MACRO_WAKE_WAIT
+            # sveglia (vehicleLocation = sveglia + GPS, benigno); non bloccare la macro se fallisce
+            try:
+                await self.coordinator.async_send_command("localizza")
+            except Exception:  # noqa: BLE001
+                pass
+        await asyncio.sleep(attesa)  # lascia accendere il bus comfort
         try:
             await self.coordinator.async_send_command(cmd)
         except Exception as err:  # noqa: BLE001

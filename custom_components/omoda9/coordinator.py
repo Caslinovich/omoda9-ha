@@ -137,6 +137,48 @@ META = {s["key"]: s for s in SENSORS}
 # stato del veicolo → non vanno messi tra i "fields" (vedi _on_car_message / Item 4).
 CMD_CONFIRM_META = ("result", "resultTime", "seq", "reason", "hasAsy")
 
+# `reason` dei push di conferma: lista di `{"code": …, "modelId": …}`, una voce per ogni
+# CENTRALINA che l'auto ha segnalato. `modelId` identifica il modulo.
+#
+# Mappatura ricavata dal campo (2026-07-21…31, 22 cicli della macro «Raffredda tutto»
+# incrociati con lo stato delle entità dopo il push), NON dalla documentazione:
+#   * quando `reason` è assente → clima E tutti e quattro i sedili ventilati si accendono
+#     nello stesso istante;
+#   * quando `reason` contiene 9/10/11/13 → i sedili ventilati NON si accendono, mentre il
+#     clima parte lo stesso. Sono quindi i quattro moduli sedile. Quale voce sia quale
+#     sedile NON è stato distinto (falliscono sempre tutti e quattro insieme) → nessuno dei
+#     quattro viene nominato singolarmente: inventare l'assegnazione sarebbe peggio che
+#     tacerla.
+#   * `0` compare con codici diversi (8, 9, 11, 95, 108) ed è il clima. Attenzione: comparire
+#     qui NON significa che il clima non sia partito — nei casi osservati partiva comunque.
+#     Per questo il messaggio dice «segnala un problema su», non «non è partito». Anzi: il
+#     codice 95 è arrivato su PRATICAMENTE OGNI comando di spegnimento, compresi quelli
+#     eseguiti alla perfezione (2026-08-01) → da solo il clima non è il segno di un guasto,
+#     e `_format_cmd_result` non lo tratta più come tale.
+#
+# Aggiornamento 2026-08-01: due voci sono state DISTINTE isolando il comando singolo, cosa
+# che le macro non permettevano (lì i quattro sedili falliscono sempre insieme). Inviando il
+# solo riscaldamento del sedile guida la risposta è stata esattamente `[0:9, 4:1]`, e col
+# solo ventilato `[0:9, 9:1]`: nessun altro modulo. Quindi 4 e 9 sono il sedile GUIDA, e per
+# esclusione gli altri tre di ciascun gruppo sono gli altri tre sedili (l'auto ne ha quattro
+# riscaldati e quattro ventilati) — questi ultimi restano senza posto assegnato, perché
+# quale sia quale non è stato misurato.
+#   * 15 e 16 compaiono SOLO nella macro «Riscalda tutto», che oltre ai sedili comanda
+#     parabrezza, lunotto e volante: sarebbero i candidati naturali, ma non è verificato →
+#     restano fuori tabella.
+# I modelId fuori tabella si riportano grezzi (`modulo <id>`): meglio un id che una bugia.
+REASON_MODULI = {
+    "0": "clima",
+    "4": "sedile guida riscaldato",   # isolato dal comando singolo (2026-08-01)
+    "5": "sedile riscaldato",
+    "6": "sedile riscaldato",
+    "8": "sedile riscaldato",
+    "9": "sedile guida ventilato",    # isolato dal comando singolo (2026-08-01)
+    "10": "sedile ventilato",
+    "11": "sedile ventilato",
+    "13": "sedile ventilato",
+}
+
 # [MED] Campi "geo" ammessi in self.position (push 1301 / sonda realtime). Si tiene
 # SOLO la geolocalizzazione: batteria/velocità/online vivono in self.data["realtime"].
 GEO_KEYS = ("lat", "lon", "latitude", "longitude", "speed", "vehicleSpeed",
@@ -227,6 +269,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self._fields: dict[str, str] = {}
         self._state_lock = threading.Lock()  # [H2] serializza _fields/position tra thread paho/executor/loop
         self._last_msg_ts: float = 0.0
+        # contatore dei push di CONFERMA comando (non della telemetria): è l'ancora di
+        # `_settle_after_command`. Vedi lì perché non basta `last_seen`.
+        self._confirm_n: int = 0
         self.position: dict | None = None
         self.otp_code: str = ""   # impostato dall'entità text «Codice OTP», letto da confirm
         self.data = {"fields": {}, "position": None,
@@ -430,6 +475,16 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         with self._state_lock:
             ultimo = self._last_msg_ts
         return bool(ultimo) and (time.time() - ultimo) < self.awake_window
+
+    @property
+    def auto_sveglia(self) -> bool:
+        """Accesso pubblico allo stato «sveglia» per le entità (switch macro comfort).
+
+        Le entità NON devono leggere `data["awake"]`: quel flag è la fotografia dell'ultimo
+        aggiornamento e resta acceso fino alla scadenza del timer, mentre qui la domanda è
+        «l'auto sta pubblicando ADESSO?». La differenza conta: sbagliarla farebbe saltare la
+        sveglia a un'auto che dorme, e la macro comfort andrebbe in timeout."""
+        return self._auto_e_sveglia()
 
     @callback
     def _arma_scadenza_sveglia(self) -> None:
@@ -731,8 +786,19 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         patch.update({"fields": fields_copy, "awake": True})
         if is_confirmation:
             patch["cmd_status"] = self._format_cmd_result(data)
-            # la conferma fa avanzare last_seen (sopra) → _settle_after_command esce subito,
-            # così il prossimo comando in coda parte appena l'auto ha confermato questo.
+            # [H2] il contatore è l'ancora della pausa di coda → si tocca sotto lock, perché
+            # lo legge il loop mentre qui siamo nel thread paho. Farlo avanzare SBLOCCA il
+            # comando successivo: da qui in poi l'auto non è più occupata da questo.
+            with self._state_lock:
+                self._confirm_n += 1
+            # [diag] il push di conferma GREZZO. Senza, del fallimento resta solo la frase
+            # tradotta: i codici in `reason` (modulo + codice per ogni centralina che non ha
+            # eseguito) non si possono decodificare a posteriori, ed è l'unica traccia che
+            # dice PERCHÉ una macro comfort è riuscita a metà. Il payload passa da `redact()`
+            # come tutto il resto — la posizione, se mai comparisse qui, viene rimossa.
+            if self._diag is not None:
+                self._diag.record("cmd_ack", svc=svc or "?", result=str(data.get("result", "")),
+                                  reason=data.get("reason"), data=data)
         self._update(patch)
 
         # Lo stato «sveglia» ha una scadenza: senza, resterebbe acceso per sempre (vedi
@@ -770,20 +836,79 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             )
 
     @staticmethod
+    def _solo_clima(reason) -> bool:
+        """True se l'auto ha segnalato SOLTANTO il clima (`modelId` 0), nient'altro.
+
+        Serve a non gridare al lupo. Il clima compare in `reason` anche quando tutto è
+        andato bene: il codice 95 arriva su praticamente ogni comando di SPEGNIMENTO, e il
+        2026-08-01 è arrivato pure su uno «spegni clima» eseguito correttamente. Trattarlo
+        come guasto significava mostrare «Eseguito solo in parte ⚠️» a chi aveva appena
+        spento il clima senza il minimo problema.
+
+        Un `reason` deforme (il backend potrebbe cambiare forma) NON è «solo clima»: si
+        torna al ramo prudente, che lo riporta grezzo invece di archiviarlo come innocuo."""
+        if not isinstance(reason, (list, tuple)) or not reason:
+            return False
+        if not all(isinstance(v, dict) for v in reason):
+            return False
+        return all(str(v.get("modelId")) == "0" for v in reason)
+
+    @staticmethod
+    def _descrivi_reason(reason) -> str:
+        """`reason` grezzo → elenco leggibile di moduli, con i codici in coda.
+
+        Da `[{'code':'11','modelId':'0'},{'code':'1','modelId':'9'}, …]` ricava
+        «clima, 4× sedile ventilato (codici 0:11, 9:1, …)». I moduli si contano invece di
+        ripeterli, i codici restano perché sono l'unico appiglio per capire a posteriori
+        *cosa* è andato storto. Se la struttura non è quella attesa si torna al grezzo:
+        meglio illeggibile che inventato."""
+        if not isinstance(reason, (list, tuple)) or not all(
+                isinstance(v, dict) for v in reason):
+            return str(reason)
+        nomi: list[str] = []
+        conteggio: dict[str, int] = {}
+        codici: list[str] = []
+        for voce in reason:
+            mid = str(voce.get("modelId", "?"))
+            nome = REASON_MODULI.get(mid, f"modulo {mid}")
+            if nome not in conteggio:
+                nomi.append(nome)
+            conteggio[nome] = conteggio.get(nome, 0) + 1
+            codici.append(f"{mid}:{voce.get('code', '?')}")
+        elenco = ", ".join(f"{conteggio[n]}× {n}" if conteggio[n] > 1 else n for n in nomi)
+        return f"{elenco} (codici {', '.join(codici)})"
+
+    @staticmethod
     def _format_cmd_result(data: dict) -> str:
         """Traduce l'esito REALE di un push di conferma comando in una frase per l'utente.
 
         Distinto dall'"accettato" del backend (A00079, mostrato all'invio): qui è ciò che
         l'AUTO riporta dopo aver provato a eseguire. Interpretazione CONSERVATIVA, basata
         sui dati reali (events.jsonl 2026-06-21) e sul significato del bean:
-          - `reason` (lista) è popolato SOLO sui guasti → se presente = NON riuscito;
+          - `reason` (lista) è popolato SOLO sui guasti → se presente, qualcosa NON è andato;
           - `result`: 5 = operazione asincrona ancora in corso (sempre con hasAsy=1);
             1/2 = eseguito/applicato (stato del veicolo aggiornato);
-          - codici diversi → riportati grezzi, senza inventarne il significato."""
+          - codici diversi → riportati grezzi, senza inventarne il significato.
+
+        Sul `reason` la frase è cambiata (2026-07-31) dopo aver verificato in campo che cosa
+        succede davvero all'auto quando arriva: NON è un fallimento totale. Nei 22 cicli
+        osservati della macro comfort il clima partiva comunque e a non partire erano i
+        sedili ventilati. «L'auto ha segnalato un problema ❌» seguito dal dump Python della
+        lista era quindi doppiamente inutile: allarmava più del dovuto e non diceva su cosa.
+        Ora si nominano i moduli segnalati e si dice che l'esecuzione è PARZIALE.
+
+        Seconda correzione (2026-08-01): se l'UNICO modulo segnalato è il clima non si parla
+        più di problema. Vedi `_solo_clima` — quel caso arriva su comandi perfettamente
+        riusciti, e l'avviso era un falso allarme sistematico."""
         result = str(data.get("result", "")).strip()
         reason = data.get("reason")
-        if reason:  # lista di motivi di fallimento segnalati dall'auto
-            return f"L'auto ha segnalato un problema ❌ ({reason})"[:255]
+        if reason and Omoda9Coordinator._solo_clima(reason):
+            return ("Comando ricevuto dall'auto — unica segnalazione: "
+                    f"{Omoda9Coordinator._descrivi_reason(reason)}. "
+                    "Da sola non indica un guasto.")[:255]
+        if reason:  # l'auto segnala uno o più moduli che non hanno eseguito
+            return ("Eseguito solo in parte ⚠️ — l'auto segnala un problema su: "
+                    f"{Omoda9Coordinator._descrivi_reason(reason)}")[:255]
         if result == "5":
             return "Comando in esecuzione sull'auto… ⏳"
         if result in ("1", "2"):
@@ -856,14 +981,22 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     # ───────────────── coda comandi (l'auto ne esegue uno alla volta) ─────────────────
     async def _settle_after_command(self) -> None:
-        """Pausa dopo un comando, prima che parta il prossimo in coda: aspetta la conferma
-        dell'auto (l'arrivo del push MQTT fa avanzare `last_seen`) oppure COMMAND_SETTLE_S,
-        quale che arrivi prima. Serve a non ricolpire l'auto mentre è ancora occupata (A00082)."""
-        anchor = self.data.get("last_seen")
+        """Pausa dopo un comando, prima che parta il prossimo in coda: aspetta il push di
+        CONFERMA dell'auto oppure COMMAND_SETTLE_S, quale che arrivi prima. Serve a non
+        ricolpire l'auto mentre è ancora occupata (A00082).
+
+        ⚠️ L'ancora è `_confirm_n`, NON `last_seen`. `last_seen` avanza a OGNI messaggio, e
+        un'auto sveglia manda telemetria 5A02 ogni pochi secondi: la pausa usciva quindi al
+        primo mezzo secondo — proprio nel caso in cui serviva, cioè con la vettura desta e un
+        comando appena partito. Risultato misurato in campo (luglio 2026): la coda non
+        proteggeva da due pressioni ravvicinate e il secondo comando tornava A00082 «auto
+        occupata». Contando solo le conferme la pausa dura finché l'auto ha davvero
+        risposto."""
+        anchor = self._confirm_n
         deadline = time.monotonic() + COMMAND_SETTLE_S
         while time.monotonic() < deadline:
             await asyncio.sleep(0.5)
-            if self.data.get("last_seen") != anchor:
+            if self._confirm_n != anchor:
                 return   # l'auto ha confermato → si può passare al comando successivo
 
     # ───────────────── azioni (delega a core/, in executor) ─────────────────

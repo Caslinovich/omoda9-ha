@@ -62,9 +62,9 @@ async def test_meta_di_conferma_fuori_dai_campi(hass, integrazione_avviata):
 
 
 async def test_esito_conferma_leggibile(hass, integrazione_avviata):
-    """L'esito mostrato all'utente distingue eseguito / in corso / fallito.
+    """L'esito mostrato all'utente distingue eseguito / in corso / riuscito a metà.
 
-    `reason` valorizzato = guasto segnalato dall'auto, e vince su qualunque `result`:
+    `reason` valorizzato = qualche modulo non ha eseguito, e vince su qualunque `result`:
     è l'unico campo che l'auto popola solo quando qualcosa è andato storto."""
     coord = _coordinator(hass, integrazione_avviata)
 
@@ -75,7 +75,75 @@ async def test_esito_conferma_leggibile(hass, integrazione_avviata):
     assert "⏳" in coord.data["cmd_status"]
 
     await _consegna(hass, coord, FX.cmd_confirm(result="1", reason=["door_open"]))
-    assert "❌" in coord.data["cmd_status"], "un guasto non deve apparire come successo"
+    esito = coord.data["cmd_status"]
+    assert "✅" not in esito, "un guasto non deve apparire come successo"
+    assert "in parte" in esito
+
+
+async def test_esito_parziale_nomina_i_moduli(hass, integrazione_avviata):
+    """Il `reason` reale della macro comfort diventa una frase, non un dump Python.
+
+    Forma vista in campo: una voce per centralina, `modelId` 0 = clima, 9 = sedile guida
+    ventilato (isolato dal comando singolo) e 10/11/13 gli altri tre. L'utente deve leggere
+    QUALI moduli hanno fatto storie; i codici grezzi restano in coda perché sono l'unico
+    appiglio diagnostico. Un `modelId` fuori tabella non va inventato: si riporta com'è."""
+    coord = _coordinator(hass, integrazione_avviata)
+    reason = [{"code": "11", "modelId": "0"}, {"code": "1", "modelId": "9"},
+              {"code": "1", "modelId": "10"}, {"code": "1", "modelId": "77"}]
+    await _consegna(hass, coord, FX.cmd_confirm(result="1", reason=reason))
+
+    esito = coord.data["cmd_status"]
+    assert "clima" in esito
+    assert "sedile guida ventilato" in esito
+    assert "modulo 77" in esito, "un modulo sconosciuto si riporta grezzo, non si indovina"
+    assert "0:11" in esito, "i codici grezzi servono alla diagnosi: non vanno persi"
+    assert len(esito) <= 255, "lo stato di un sensore HA non può superare i 255 caratteri"
+
+
+async def test_esito_nomina_il_sedile_guida_riscaldato(hass, integrazione_avviata):
+    """`modelId` 4 = riscaldamento del sedile guida, non «modulo 4».
+
+    Distinto il 2026-08-01 isolando il comando singolo: inviando il solo riscaldamento del
+    sedile guida l'auto ha risposto esattamente `[0:9, 4:1]`. Le macro non lo permettevano
+    (lì i quattro sedili compaiono sempre insieme)."""
+    coord = _coordinator(hass, integrazione_avviata)
+    reason = [{"code": "9", "modelId": "0"}, {"code": "1", "modelId": "4"}]
+    await _consegna(hass, coord, FX.cmd_confirm(result="3", reason=reason))
+
+    esito = coord.data["cmd_status"]
+    assert "sedile guida riscaldato" in esito
+    assert "modulo 4" not in esito
+    assert "in parte" in esito, "un sedile che non parte resta un'esecuzione parziale"
+
+
+async def test_solo_il_clima_non_e_un_guasto(hass, integrazione_avviata):
+    """Se l'unico modulo segnalato è il clima, niente avviso di problema.
+
+    Falso allarme sistematico corretto il 2026-08-01: il codice 95 sul clima arriva su
+    praticamente ogni comando di SPEGNIMENTO, compresi quelli eseguiti alla perfezione.
+    Chi spegneva il clima leggeva «Eseguito solo in parte ⚠️» senza che nulla fosse andato
+    storto. I codici grezzi restano comunque nel messaggio, per la diagnosi."""
+    coord = _coordinator(hass, integrazione_avviata)
+    await _consegna(hass, coord,
+                    FX.cmd_confirm(result="3", reason=[{"code": "95", "modelId": "0"}]))
+
+    esito = coord.data["cmd_status"]
+    assert "in parte" not in esito, "il solo clima non è un'esecuzione parziale"
+    assert "⚠️" not in esito
+    assert "0:95" in esito, "il codice grezzo resta: serve alla diagnosi"
+
+    # ma basta UN modulo vero accanto perché torni l'avviso
+    await _consegna(hass, coord, FX.cmd_confirm(
+        result="3", reason=[{"code": "95", "modelId": "0"}, {"code": "1", "modelId": "9"}]))
+    assert "in parte" in coord.data["cmd_status"]
+
+
+async def test_esito_parziale_regge_un_reason_deforme(hass, integrazione_avviata):
+    """Se il backend cambia la forma di `reason`, meglio il grezzo che un'eccezione:
+    questo codice gira nel thread paho, dove sollevare significa perdere il messaggio."""
+    coord = _coordinator(hass, integrazione_avviata)
+    await _consegna(hass, coord, FX.cmd_confirm(result="1", reason="boh"))
+    assert "boh" in coord.data["cmd_status"]
 
 
 async def test_posizione_solo_dal_push_1301(hass, integrazione_avviata):

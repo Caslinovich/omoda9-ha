@@ -305,6 +305,12 @@ class DiagRecorder:
                 cur_min = self._counters.get("_mqtt_up_min")
                 self._counters["_mqtt_up_min"] = up if cur_min is None else min(cur_min, up)
                 self._counters["_mqtt_up_max"] = max(self._counters.get("_mqtt_up_max", 0), up)
+        elif etype == "cmd_ack":
+            # quante conferme sono arrivate e quante portavano un `reason`: è il rapporto
+            # che dice se un comando riesce sempre o solo a volte, senza rileggere il file.
+            self._counters["cmd_ack_total"] += 1
+            if ev.get("reason"):
+                self._counters["cmd_ack_parziali"] += 1
         elif etype == "unknown_field":
             key = ev.get("key")
             if key:

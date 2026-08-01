@@ -107,6 +107,30 @@ APPT_CHARGE_STATE_MAP = {"0": "Disattivata", "1": "Attiva", "2": "In esecuzione"
 FAST_GUN_MAP = {"0": "Scollegata", "1": "Collegata", "2": "Collegata (ricarica rapida)"}
 
 
+def _frame_batteria_degradato(rt: dict) -> bool:
+    """True se il frame realtime porta `pureElectricRange = 0`: NON è una lettura, è un
+    segnaposto → in quel frame anche la percentuale batteria è da buttare.
+
+    Trovato in campo il 2026-07-31. Alle 01:31 la ricarica si chiude a 100% (150 km); due
+    minuti dopo, spenta l'alta tensione, il cloud serve un frame con `dumpEnergy` 97 e
+    `pureElectricRange` 0 — e ci resta inchiodato **7 ore**, finché l'auto non si risveglia
+    e torna a dire 100%. Non è un valore vecchio "quasi giusto": nello storico dei 10 giorni
+    precedenti tutti e 5 i frame con 0 km sono degradati, e la percentuale che portavano era
+    sbagliata in 3 casi su 5 (97% contro 82% reale il 26/07, 97% contro 47% il 29/07,
+    34% contro 100% il 25/07). Il valore del segnaposto cambia nel tempo (34, poi 97),
+    quindi non si può riconoscere dalla percentuale: l'unico indizio affidabile è lo 0 km.
+
+    Perché lo 0 km si può usare come sentinella senza rischi: l'autonomia elettrica scala
+    con la carica a ~1,5 km per punto (100% = 150 km, 45% = 69 km, 16% = 12 km), quindi uno
+    zero VERO vorrebbe dire scendere sotto l'~8%. Questa vettura non è mai andata sotto il
+    16% (minimo assoluto in 5 settimane di storico) perché tiene una riserva per l'ibrido.
+    """
+    try:
+        return float(rt.get("pureElectricRange")) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _range_totale(rt: dict):
     """Autonomia totale REALE = elettrica (`pureElectricRange`) + benzina (`mileageSurplus`).
     None se manca un pezzo → resta l'ultimo valore noto (RestoreSensor).
@@ -117,6 +141,10 @@ def _range_totale(rt: dict):
     miglia (182 km/1,609 = 113 e 215 km/1,609 = 134, due campioni a un mese di distanza).
     Quindi non contiene affatto la parte elettrica. La somma elettrica+benzina segue lo
     stato batteria → è la scelta corretta."""
+    # 0 km = segnaposto, non una lettura: sommarlo farebbe crollare il totale di ~150 km
+    # (visto il 30/07: 251 → 125 km per tutta la notte). Vedi _frame_batteria_degradato.
+    if _frame_batteria_degradato(rt):
+        return None
     try:
         return float(rt["pureElectricRange"]) + float(rt["mileageSurplus"])
     except (TypeError, ValueError, KeyError):
@@ -125,8 +153,10 @@ def _range_totale(rt: dict):
 
 _RT_SENSORS: list[_RtSpec] = [
     # ── P1 · autonomia / chilometri (valori km confermati dal vivo) ──
+    # 0 km = segnaposto "alta tensione spenta", NON autonomia esaurita → tieni l'ultimo noto
+    # invece di mostrare 0 km per ore ad auto carica (vedi _frame_batteria_degradato).
     _RtSpec("range_elettrico", "Autonomia elettrica", "pureElectricRange",
-            DIST, KM, MEAS, "mdi:map-marker-distance"),
+            DIST, KM, MEAS, "mdi:map-marker-distance", invalid=(0.0,)),
     # mileageSurplus = autonomia a BENZINA (motore termico), NON il totale: verificato dal
     # vivo 2026-06-23 che resta 215 km mentre l'autonomia elettrica scende (60→27 km) e il
     # carburante è invariato (oilSurplus 23 L) → segue il serbatoio, non la batteria.
@@ -264,6 +294,7 @@ class _Omoda9RestoreSensor(Omoda9Entity, RestoreSensor):
     def __init__(self, coord, name: str, unique_suffix: str) -> None:
         super().__init__(coord, name, unique_suffix, entity_id_format=ENTITY_ID_FORMAT)
         self._restored = None
+        self._ultimo_noto = None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -277,8 +308,18 @@ class _Omoda9RestoreSensor(Omoda9Entity, RestoreSensor):
 
     @property
     def native_value(self):
+        # ⚠️ «ultimo valore noto» = l'ultimo LETTO DAVVERO, non quello ripristinato all'avvio.
+        # Prima il fallback era il solo `_restored`, che è fotografato una volta sola quando
+        # HA parte e non si muove più: un segnaposto (HV spenta, 0 V, 0 km…) non riportava
+        # all'ultima lettura buona ma a quella di giorni prima. Con HA riavviato di rado la
+        # differenza è enorme — è la stessa classe di errore del 97% del 31/07, e senza
+        # questo la protezione sul frame degradato non avrebbe niente di sensato a cui
+        # ripiegare. `_restored` resta la rete di sicurezza per il primo dato dopo l'avvio.
         live = self._live_value()
-        return live if live is not None else self._restored
+        if live is not None:
+            self._ultimo_noto = live
+            return live
+        return self._ultimo_noto if self._ultimo_noto is not None else self._restored
 
 
 class Omoda9FieldSensor(_Omoda9RestoreSensor):
@@ -317,6 +358,10 @@ class Omoda9Battery(_Omoda9RestoreSensor):
         rt = self.coordinator.data.get("realtime") or {}
         if "dumpEnergy" not in rt:
             return None
+        # frame degradato (0 km di autonomia elettrica): la percentuale che porta non è una
+        # lettura → tieni l'ultimo valore noto. Vedi _frame_batteria_degradato.
+        if _frame_batteria_degradato(rt):
+            return None
         try:
             soc = float(rt["dumpEnergy"])
         except (TypeError, ValueError):
@@ -329,15 +374,13 @@ class Omoda9Battery(_Omoda9RestoreSensor):
 
     @property
     def native_value(self):
-        live = self._live_value()
-        if live is not None:
-            return live
+        val = super().native_value
         # non riproporre uno "0%" stantio salvato prima del fix dei segnaposto: 0 non è un
         # ultimo-valore-noto valido per la batteria → meglio "sconosciuto" finché non arriva
         # una lettura vera (primo viaggio/ricarica o pulsante "Aggiorna stato completo").
-        if self._restored in (0, 0.0, "0", "0.0"):
+        if val in (0, 0.0, "0", "0.0"):
             return None
-        return self._restored
+        return val
 
 
 class Omoda9Speed(_Omoda9RestoreSensor):
