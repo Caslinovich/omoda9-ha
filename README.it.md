@@ -1,3 +1,12 @@
+<!-- logo:inizio -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Caslinovich/omoda9-ha/master/custom_components/omoda9/brand/dark_logo.png">
+    <img src="https://raw.githubusercontent.com/Caslinovich/omoda9-ha/master/custom_components/omoda9/brand/logo.png" alt="OMODA | JAECOO" height="96">
+  </picture>
+</p>
+<!-- logo:fine -->
+
 # Omoda 9 / Jaecoo → Home Assistant
 
 🌐 [English](README.md) · **Italiano**
