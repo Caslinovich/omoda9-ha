@@ -6,6 +6,8 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.7.2 — 2026-08-02
+
 ### 🇮🇹 Italiano
 
 - **L'integrazione ha finalmente il suo logo.** Il marchio OMODA | JAECOO compare adesso in HACS e nella pagina delle integrazioni di Home Assistant, al posto del riquadro vuoto. C'è anche la versione chiara per chi usa il tema scuro, così si vede bene in entrambi i casi.
