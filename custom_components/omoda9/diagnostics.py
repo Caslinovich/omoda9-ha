@@ -6,8 +6,13 @@ di regione, presenza di token/certificati e l'ultima telemetria ricevuta, ma
 NON espone alcun dato personale o segreto:
 
   • email, PIN, VIN, tUserId            → oscurati (REDACTED)
+  • numero di telefono                  → oscurato, restano le ultime 4 cifre
   • posizione GPS (lat/lon)             → oscurata (dove vivi non esce mai)
   • token e certificati mutual-TLS      → solo «presente: sì/no», mai il contenuto
+
+Gli indirizzi e-mail spariscono in DUE forme: quella grezza e quella già mascherata alla
+sorgente (`m***@dominio.it`, che nel dialogo a schermo è voluta perché conferma all'utente
+dove sta andando il codice). In questo file non resta nemmeno il dominio.
 
 Così l'utente può inviarti il file in tutta sicurezza.
 """
@@ -21,29 +26,72 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, CERT_FILES
+from .core import mask
 
 # Chiavi da oscurare ovunque compaiano (config entry + eventuali dict annidati).
 # NB: «seq» sta qui perché nel payload realtime vale "<VIN>-<timestamp>" → contiene il VIN.
 # NB: «certs_src» è il PERCORSO da cui l'utente ha importato i certificati mutual-TLS: è
 # info-disclosure sul filesystem (nome utente, struttura delle cartelle, a volte un backup
 # dell'app) e non serve al supporto → oscurato (P1-6).
+# NB: «phone»/«area_code»/«mobile» = identità di login degli account registrati col numero
+# (login via SMS). Sono dato personale quanto l'email — e a differenza di un OTP non scadono
+# mai. ⚠️ Oscurare la CHIAVE non basta: il numero compare anche dentro frasi discorsive
+# (`session_detail`), dove non è una chiave ma testo libero → lì si maschera alla sorgente,
+# in core/session.py. Questa deny-list copre solo il ramo entry.data/options.
 TO_REDACT = {
     "email", "pin", "vin", "tuserid", "seq", "certs_src",
+    "phone", "area_code", "mobile",
     "lat", "lon", "latitude", "longitude", "position",
 }
 
 
-def _scrub_vin(obj: Any, vin: str) -> Any:
-    """Rete di sicurezza: toglie il VIN ovunque compaia come SOTTOSTRINGA, anche dentro un
-    campo che la redazione per-chiave non conosce (es. un id composto)."""
-    if not vin:
+def _scrub_valore(obj: Any, ago: str) -> Any:
+    """Toglie `ago` ovunque compaia come SOTTOSTRINGA, a qualsiasi profondità.
+
+    Generalizzazione di `_scrub_vin`: serve per i dati che compaiono anche **dentro frasi**,
+    non solo come valore di una chiave nota. Il caso concreto è il numero di telefono degli
+    account SMS, che `core/session.py` scrive dentro `session_detail` («Codice inviato al
+    numero …») — un campo esportato verbatim, dove `TO_REDACT` per definizione non arriva.
+    Il numero è già mascherato alla sorgente: questa è la rete di sicurezza per i percorsi
+    che non passano di lì (dati vecchi rimasti in memoria, campi aggiunti in futuro)."""
+    if not ago:
         return obj
     if isinstance(obj, dict):
-        return {k: _scrub_vin(v, vin) for k, v in obj.items()}
+        return {k: _scrub_valore(v, ago) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_scrub_vin(v, vin) for v in obj]
-    if isinstance(obj, str) and vin in obj:
-        return obj.replace(vin, "**REDACTED**")
+        return [_scrub_valore(v, ago) for v in obj]
+    if isinstance(obj, str) and ago in obj:
+        return obj.replace(ago, "**REDACTED**")
+    return obj
+
+
+def _scrub_vin(obj: Any, vin: str) -> Any:
+    """Rete di sicurezza storica sul VIN: ora un caso particolare di `_scrub_valore`.
+    Il nome resta perché è quello usato nei punti di chiamata e nei test."""
+    return _scrub_valore(obj, vin)
+
+
+def _scrub_email(obj: Any) -> Any:
+    """Sostituisce QUALUNQUE indirizzo e-mail con `**EMAIL**`, ovunque compaia dentro una
+    stringa del report.
+
+    Perché serve nonostante `TO_REDACT` contenga già `email`: la deny-list lavora per CHIAVE,
+    e l'indirizzo compariva dentro una frase (`session_detail`). Stesso identico difetto già
+    visto con le coordinate e col numero di telefono — terza volta, stesso schema. Il pattern
+    è quello unico di `core/mask.py`, condiviso col monitor diagnostico.
+
+    ⚠️ SI CANCELLA ANCHE LA FORMA GIÀ MASCHERATA (`m***@dominio.it`). Non è ridondanza: quella
+    forma è voluta nel dialogo che l'utente legge — gli conferma che il codice sta andando dove
+    deve — ma in un file che finisce su GitHub il dominio è comunque un'informazione su di lui.
+    Mascherare alla sorgente e fermarsi lì era un peggioramento rispetto a prima, quando
+    l'indirizzo grezzo veniva sostituito per intero: il canale a schermo e il canale pubblico
+    vogliono cose diverse, e questa è la riga in cui si separano."""
+    if isinstance(obj, dict):
+        return {k: _scrub_email(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_email(v) for v in obj]
+    if isinstance(obj, str):
+        return mask.RE_EMAIL_MASCHERATA.sub("**EMAIL**", mask.RE_EMAIL.sub("**EMAIL**", obj))
     return obj
 
 
@@ -154,10 +202,27 @@ async def async_get_config_entry_diagnostics(
         snap = recorder.snapshot()
         diag["diagnostic_mode"] = _scrub_vin(async_redact_data(snap, TO_REDACT), vin)
 
-    # Passata FINALE sulle coordinate, su tutto il report (2026-07-20).
-    # Sta qui, in fondo e una volta sola, di proposito: applicarla ai singoli campi
-    # significherebbe ricordarsi di farlo per ognuno — ed è esattamente la dimenticanza
-    # che ha fatto uscire la posizione dentro `probe_status`, un messaggio discorsivo che
-    # nessuna deny-list per chiave poteva coprire. Qui non c'è nulla da ricordare: ciò che
-    # esce dal modulo è già passato di qui.
-    return _scrub_geo(diag)
+    # Passate FINALI su TUTTO il report, in fondo e una volta sola. Stanno qui di proposito:
+    # applicarle ai singoli campi significherebbe ricordarsi di farlo per ognuno — ed è
+    # esattamente la dimenticanza che ha fatto uscire la posizione dentro `probe_status`, un
+    # messaggio discorsivo che nessuna deny-list per chiave poteva coprire. Qui non c'è nulla
+    # da ricordare: ciò che esce dal modulo è già passato di qui.
+    #   * coordinate (2026-07-20)
+    #   * numero di telefono (2026-08-02): stesso identico difetto, altro dato — compariva
+    #     dentro `session_detail` («Codice inviato al numero …»). Mascherato anche alla
+    #     sorgente in core/session.py; questa è la rete sotto.
+    #   * indirizzo e-mail (2026-08-02): l'intestazione di questo file prometteva «email →
+    #     oscurata» mentre `session_detail` la conteneva per esteso («Codice inviato alla mail
+    #     …»), perché la deny-list lavora per CHIAVE e lì l'indirizzo sta dentro una frase.
+    #     Mascherato alla sorgente in core/session.py; questa passata prende anche gli
+    #     indirizzi che dovessero arrivare da canali non nostri (messaggi d'errore del server).
+    #
+    # ⚠️ L'ORDINE CONTA, e va letto da destra a sinistra: l'e-mail per PRIMA. Tutti i marcatori
+    # di redazione contengono asterischi (`**REDACTED**`, `**GEO**`), e un asterisco non fa
+    # parte dei caratteri ammessi prima della `@`: se una passata precedente tocca la parte
+    # locale di un indirizzo — succede quando ci si trova dentro il numero di telefono o il VIN
+    # — quello che resta non è più riconoscibile come e-mail e sfugge del tutto. Misurato:
+    # `utente mario3001234567@dominio.it` diventava `mario**REDACTED**@dominio.it`, col dominio
+    # in chiaro, invece di `**EMAIL**`.
+    return _scrub_valore(_scrub_geo(_scrub_email(diag)),
+                         getattr(coordinator, "phone", "") or "")

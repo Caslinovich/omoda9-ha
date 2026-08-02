@@ -99,6 +99,10 @@ class CoreCtx:
     tuserid: str = ""
     pin: str = ""
     email: str = ""
+    # Login via SMS: se `phone` è valorizzato il login usa il ramo mobile (invio via
+    # sendSmsCode + grant_type=mobile) invece dell'email. `area_code` = prefisso in cifre.
+    phone: str = ""
+    area_code: str = "39"
 
     # — percorsi per-entry nella config dir di Home Assistant —
     token_path: str = ""
@@ -172,6 +176,8 @@ def ctx_da_environ() -> CoreCtx:
         tuserid=os.environ.get("TUSERID", ""),
         pin=os.environ.get("OMODA_PIN", ""),
         email=os.environ.get("OMODA_EMAIL", ""),
+        phone=os.environ.get("OMODA_PHONE", ""),
+        area_code=os.environ.get("OMODA_AREA", "39"),
         token_path=os.environ.get("OMODA_TOKEN_PATH", ""),
         taskid_file=os.environ.get("OMODA_TASKID_FILE", ""),
         src_dir=os.environ.get("OMODA_SRC_DIR", HERE),

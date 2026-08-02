@@ -3,6 +3,14 @@
     "step": {
       "user": {
         "title": "Omoda 9 / Jaecoo",
+        "description": "Choose how to sign in to your Omoda/Jaecoo account. Use the phone option if your account is registered with a phone number instead of an email.",
+        "menu_options": {
+          "login_email": "Sign in with email",
+          "login_phone": "Sign in with phone number (SMS)"
+        }
+      },
+      "login_email": {
+        "title": "Sign in with email",
         "description": "Enter your Omoda/Jaecoo account email and vehicle PIN. An OTP code will be sent to your email; VIN and account ID are detected automatically.{reason}",
         "data": {
           "email": "Account email",
@@ -15,9 +23,24 @@
           "certs_src": "Folder with mutual-TLS certs to import (optional)"
         }
       },
+      "login_phone": {
+        "title": "Sign in with phone (SMS)",
+        "description": "Enter the phone number registered on your Omoda/Jaecoo account, its country code (Italy = 39, without +) and the vehicle PIN. A verification code will be sent by SMS; VIN and account ID are detected automatically.{reason}",
+        "data": {
+          "phone": "Phone number (without country code)",
+          "area_code": "Country code in digits (e.g. 39)",
+          "pin": "Vehicle control PIN",
+          "bff": "BFF endpoint (region)",
+          "tsp_host": "TSP console host (region)",
+          "car_mqtt_host": "Vehicle MQTT broker host (region)",
+          "car_mqtt_port": "Vehicle MQTT broker port (region)",
+          "channel_id": "Channel ID (region)",
+          "certs_src": "Folder with mutual-TLS certs to import (optional)"
+        }
+      },
       "otp": {
-        "title": "Email verification code",
-        "description": "Enter the OTP code received by email.{reason}",
+        "title": "Verification code",
+        "description": "Enter the OTP code you received (by email or SMS).{reason}",
         "data": {
           "code": "OTP code"
         }
@@ -30,34 +53,38 @@
         }
       },
       "reconfigure": {
-        "title": "Change the vehicle control PIN",
-        "description": "Enter the 4-digit PIN used for remote commands. The PIN is not used to log in, so no email code is needed. Fix this if commands report success but the car does nothing (wrong PIN).",
+        "title": "Fix PIN and phone number",
+        "description": "Change the 4-digit PIN used for remote commands and — if you sign in by SMS — the phone number the code is sent to.\n\nThe PIN is not used to sign in, so no code is needed here. Fix it if commands come back as \"successful\" but the car does nothing (wrong PIN). Change the number if you switched phone number: your current session stays valid, only the next code will go to the new number.",
         "data": {
-          "pin": "Vehicle control PIN"
+          "pin": "Vehicle control PIN",
+          "phone": "Phone number (without country code)",
+          "area_code": "Country code, digits only (Italy = 39)"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Omoda 9 / Jaecoo",
-        "description": "The session has expired: until you re-authenticate, the integration cannot talk to the car and commands and sensors stay frozen.\n\n**No code has been sent automatically.** Choose “Send me a new code” to have a fresh one emailed to {email}.{reason}",
+        "description": "The session has expired: until you re-authenticate, the integration cannot talk to the car and commands and sensors stay frozen.\n\n**No code has been sent automatically.** Choose “Send me a new code” to have a fresh one sent to {email}.{reason}",
         "menu_options": {
-          "send_code": "Send me a new code by email",
-          "enter_code": "I already have a valid code"
+          "send_code": "Send me a new code",
+          "enter_code": "I already have a valid code",
+          "install_fallback": "Install the fallback TLS client (download, ~12 MB)"
         }
       },
       "enter_code": {
         "title": "Enter the verification code",
-        "description": "Enter the code just emailed to {email}. Codes expire after a few minutes: if it is rejected you can go back and request a new one.{reason}",
+        "description": "Enter the code just sent to {email}. Codes expire after a few minutes: if it is rejected you can go back and request a new one.{reason}",
         "data": {
           "code": "OTP code"
         }
       }
     },
     "error": {
-      "otp_send_failed": "Could not send the OTP code. Check the email/PIN and try again.",
+      "otp_send_failed": "Could not send the code. Check the email/phone and PIN and try again.",
       "otp_invalid": "Invalid or expired OTP code.",
       "no_vehicle": "Login succeeded but no vehicle was found on this account.",
       "pin_required": "Enter the vehicle control PIN.",
-      "otp_required": "Enter the code you received by email."
+      "otp_required": "Enter the code you received.",
+      "phone_invalid": "That phone number does not look right. Enter the digits of the number only, without the country code and without spaces; in the other field put only the digits of the country code (Italy = 39)."
     },
     "abort": {
       "already_configured": "This vehicle (VIN) is already configured.",

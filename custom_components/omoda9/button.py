@@ -74,6 +74,10 @@ class Omoda9ActionButton(Omoda9Entity, ButtonEntity):
         super().__init__(coord, name, suffix, entity_id_format=ENTITY_ID_FORMAT)
         self._action = action
         self._attr_icon = self._ICONS.get(suffix, "mdi:gesture-tap-button")
+        # Il codice arriva via SMS se l'account è registrato con un numero: mostrare comunque
+        # una busta significherebbe promettere una mail che non arriverà mai.
+        if suffix == "otp_request" and (getattr(coord, "phone", "") or ""):
+            self._attr_icon = "mdi:message-text-fast"
         if category is not None:
             self._attr_entity_category = category
 

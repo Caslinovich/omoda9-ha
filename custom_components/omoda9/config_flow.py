@@ -30,6 +30,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     DOMAIN, CONF_EMAIL, CONF_PIN, CONF_VIN, CONF_TUSERID,
+    CONF_PHONE, CONF_AREA_CODE, DEFAULT_AREA_CODE,
     CONF_BFF, CONF_TSP_HOST, CONF_CERTS_SRC, CONF_CHANNEL_ID,
     CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, DEFAULTS,
     CONF_POLL_NORMAL, CONF_POLL_CHARGING,
@@ -71,6 +72,157 @@ def _reason_line(detail: str | None) -> str:
     return f"\n\n⚠️ Motivo: {detail}" if detail else ""
 
 
+# Client TLS di RIPIEGO per il solo invio SMS. L'endpoint `sendSmsCode` è dietro un WAF che
+# filtra sull'impronta TLS del client; la strada normale è `core/tls_client.py`, che ottiene
+# l'impronta giusta con la libreria standard sopra `requests` — già nel manifest, nulla da
+# scaricare, uguale su ogni processore. `curl_cffi` serve solo se un giorno quella strada
+# smettesse di passare, ed è per questo che si installa **solo su richiesta**, come rimedio.
+SMS_CLIENT_REQ = "curl_cffi>=0.7"
+
+
+def _ripiego_gia_presente() -> bool:
+    """C'è già `curl_cffi`? Se sì, non ha senso offrire di installarlo."""
+    from .core import tls_client
+    return tls_client.curl_cffi_presente()
+
+
+async def _assicura_client_sms(hass: HomeAssistant) -> bool:
+    """Installa `curl_cffi` come ULTIMA SPIAGGIA, e solo se non c'è già.
+
+    ⚠️ Perché NON sta nei `requirements` del manifest: è un pacchetto con estensione nativa, e
+    le requirements del manifest sono obbligatorie per TUTTI. Se l'installazione fallisce,
+    `async_process_deps_reqs` solleva PRIMA che il componente venga importato, e l'utente non
+    perde «l'SMS»: perde tutte le entità e non riesce più nemmeno ad aprire la configurazione.
+    Chi usa il login e-mail pagherebbe un rischio che non lo riguarda.
+
+    ⚠️ Perché non si chiama più all'INIZIO del login via SMS, com'era prima. Farlo lì rendeva
+    obbligatorio ciò che è facoltativo, e si portava dietro quattro guai misurati:
+      * dentro il container di Home Assistant il pacchetto finisce in `/root/.local/…`, che non
+        è fra i volumi montati: ogni aggiornamento di HA ricrea il container e **lo cancella**,
+        senza che nulla lo reinstalli (non essendo nel manifest). Il guasto si manifesta mesi
+        dopo, quando serve un OTP;
+      * un fallimento anche momentaneo entra nella memoria dei fallimenti di HA, che da lì in
+        poi rifiuta **all'istante e senza ritentare** fino al riavvio di Home Assistant: chi
+        configurava mentre il router si riavviava restava bloccato senza capire perché;
+      * su un'installazione senza ambiente virtuale il pacchetto va in `<config>/deps`, che HA
+        aggiunge al proprio `sys.path` ma non al `PYTHONPATH`: il sottoprocesso di login non lo
+        vedrebbe comunque, e l'utente leggeva «installa curl_cffi» con curl_cffi installato;
+      * il passo del form restava fermo su uno scaricamento di ~12 MB senza dirlo a nessuno.
+    Ora è un rimedio: si tenta una volta sola, quando il filtro anti-bot ha respinto TUTTI i
+    client disponibili, e se non riesce non blocca niente."""
+    from homeassistant.requirements import async_process_requirements
+
+    from .core import tls_client
+
+    if tls_client.curl_cffi_presente():
+        return True
+    try:
+        # `is_built_in=False`: senza, HA descrive omoda9 come integrazione di serie nei propri
+        # avvisi e sopprime il rimando all'autore dell'integrazione personalizzata.
+        await async_process_requirements(hass, DOMAIN, [SMS_CLIENT_REQ], is_built_in=False)
+        return True
+    except Exception as e:  # noqa: BLE001  — RequirementsNotFound e qualsiasi errore di pip
+        _LOGGER.warning("Omoda9: impossibile installare %s (client TLS di ripiego per l'invio "
+                        "SMS): %s", SMS_CLIENT_REQ, e)
+        return False
+
+
+_ACCESSO_INTERNAZIONALE = "00"   # forma lunga di "+", come si scrive sui vecchi telefoni
+_MAX_CIFRE_PREFISSO = 3          # E.164: i prefissi paese hanno 1, 2 o 3 cifre. Nessuno ne ha 4.
+
+
+def _normalizza_telefono(numero: str | None, prefisso: str | None) -> tuple[str, str]:
+    """Ripulisce numero e prefisso UNA VOLTA SOLA, qui: da qui in poi viaggiano in entry.data,
+    nell'ambiente dei sottoprocessi e nell'identità `APP-LOGIN@<num>_<area>`, e a valle nessuno
+    li tocca più (`invia_sms` fa solo `lstrip("+")` + spazi, `build_params_mobile` altrettanto).
+
+    Cose che la gente scrive davvero e che senza questo passaggio arrivano storte al server:
+      * numero copiato dalla rubrica col prefisso già dentro → identità `APP-LOGIN@39<num>_39`;
+      * separatori dentro il numero: spazi, punti, trattini;
+      * prefisso scritto `+39` o `0039` → `areaCode="+39"`, che il server non riconosce;
+      * zero di accesso nazionale davanti al numero (Regno Unito, Germania, Francia…).
+
+    ⚠️ REGOLA CHE GOVERNA I CASI DUBBI — i due errori possibili NON si equivalgono.
+    Lasciare attaccato un prefisso che andava tolto produce un tentativo fallito, e l'utente
+    rimedia riscrivendo il numero. **Tagliare cifre a un numero valido no**: il valore mutilato
+    viene ri-proposto nel form, l'utente lo rimanda tale e quale, e da lì in poi ogni tentativo
+    parte storto; se il flow arriva in fondo il numero sbagliato finisce in `entry.data`, che
+    `reconfigure` non permette di correggere (cambia solo il PIN) — resta solo eliminare e
+    riaggiungere l'integrazione, perdendo entity_id e storico. Perciò **nel dubbio non si taglia**.
+
+    ⚠️ IL PREFISSO SI SFILA SOLO SE L'UTENTE LO HA DICHIARATO, cioè se ha scritto `+` o `00`.
+    Non esiste modo di distinguere altrimenti «prefisso incollato davanti» da «numero che
+    comincia per quelle cifre»: sono la stessa stringa. Le due euristiche provate prima
+    tagliavano numeri veri — la prima (6 cifre residue) amputava i cellulari italiani
+    391/392/393, la seconda (9 cifre residue) i numeri kazaki e statunitensi, dove il prefisso
+    è di UNA cifra e un nazionale da 10 supera qualunque soglia. Peggio: essendo la soglia
+    calcolata sull'uscita, la funzione **non era idempotente** e il numero perdeva una cifra a
+    ogni ri-apertura del form, senza che l'utente digitasse nulla.
+    COSTO ACCETTATO: chi incolla `39…` senza `+` non se lo vede sfilare, il tentativo fallisce
+    e deve riscrivere il numero come chiede l'etichetta del campo. È il verso giusto in cui
+    sbagliare. Vale anche per i Paesi a numerazione corta (Danimarca, Norvegia).
+    AMBIGUITÀ RESIDUA, dichiarata: chi scrive `+` davanti al PROPRIO numero nazionale — cioè
+    senza il prefisso paese, contro quanto dice l'etichetta — e ha un numero che comincia con
+    le cifre del prefisso (in Italia: 391/392/393) se le vede sfilare, perché il `+` è preso
+    per quello che significa. Le due forme sono la stessa stringa e non c'è modo di
+    distinguerle; il taglio avviene una volta sola e non peggiora a ogni tentativo.
+
+    ⚠️ ORDINE: la forma internazionale (`+39…`, `0039…`) va riconosciuta PRIMA di rimuovere
+    qualsiasi zero. Facendolo dopo, `0039…` non corrispondeva mai al prefisso paese e usciva
+    col prefisso duplicato dentro il numero.
+
+    ⚠️ IDEMPOTENZA, non un vezzo: dopo un invio fallito il form viene ri-proposto **coi valori
+    già normalizzati**, quindi questa funzione riceve regolarmente la propria uscita. L'uscita
+    non contiene più `+` né zeri iniziali, quindi nessuno dei due tagli può riscattare: è
+    idempotente per costruzione, non per fortuna.
+
+    ⚠️ FUORI PERIMETRO: i fissi italiani, che in E.164 conservano lo zero iniziale. Qui lo zero
+    viene tolto sempre, perché questo campo serve a ricevere un SMS e i fissi non ne ricevono;
+    i cellulari italiani non cominciano mai per zero.
+
+    ⚠️ Niente numeri per esteso qui né altrove nel repo, nemmeno inventati: `check_secrets.sh`
+    li tratta tutti come dato personale (giustamente — non sa distinguere i tuoi dagli altrui).
+    Ritorna ("", "") se numero o prefisso non sono utilizzabili → il chiamante mostra
+    `phone_invalid` invece di bruciare un tentativo (e un SMS) su dati inutilizzabili."""
+    solo_cifre = lambda s: "".join(ch for ch in str(s or "") if ch.isdigit())
+
+    # ── prefisso paese ───────────────────────────────────────────────────────────────────
+    scritto = str(prefisso or "").strip()
+    if not scritto:
+        pref = DEFAULT_AREA_CODE              # casella lasciata vuota = «vale il default»
+    else:
+        pref = solo_cifre(scritto).lstrip("0")            # "+39" / "0039" → "39"
+        # Un prefisso SCRITTO ma illeggibile ("+", "0", "abc") non deve diventare Italia in
+        # silenzio: chi è in Germania si vedrebbe spedire l'SMS a un numero italiano che non è
+        # suo. Prima il ripiego sul default rendeva impossibile accorgersene — e il controllo
+        # `not pref` più in basso era codice morto, perché `pref` non poteva mai essere vuoto.
+        if not 1 <= len(pref) <= _MAX_CIFRE_PREFISSO:
+            return "", ""
+
+    # ── numero ───────────────────────────────────────────────────────────────────────────
+    grezzo = str(numero or "").strip()
+    num = solo_cifre(grezzo)
+    # Forma internazionale DICHIARATA dall'utente: solo allora il prefisso paese è dentro il
+    # numero e si può sfilare senza rischiare di amputare (vedi la regola sopra).
+    internazionale = grezzo.startswith("+") or num.startswith(_ACCESSO_INTERNAZIONALE)
+    if num.startswith(_ACCESSO_INTERNAZIONALE):
+        num = num[len(_ACCESSO_INTERNAZIONALE):]
+    if internazionale and num.startswith(pref):
+        num = num[len(pref):]
+
+    # Zero di accesso nazionale (Regno Unito, Germania, Francia…): si scrive solo nella forma
+    # interna al Paese e sparisce in E.164. Va tolto SEMPRE, non in alternativa allo sfilamento
+    # del prefisso — `+44 (0)7912…` ha entrambi, e con un `elif` lo zero restava attaccato.
+    # `lstrip` e non un taglio singolo: così l'uscita non comincia mai per zero, ed è questo a
+    # rendere la funzione idempotente (un taglio singolo ne avrebbe tolto uno per ogni passata).
+    num = num.lstrip("0")
+
+    # E.164: numero + prefisso non superano le 15 cifre in tutto.
+    if not 6 <= len(num) <= 15 - len(pref):
+        return "", ""
+    return num, pref
+
+
 def _ctx_del_flow(hass: HomeAssistant, data: dict, token_path: str | None = None):
     """`CoreCtx` per i passi del config flow, costruito dai dati inseriti nel form.
 
@@ -88,6 +240,8 @@ def _ctx_del_flow(hass: HomeAssistant, data: dict, token_path: str | None = None
         tuserid=data.get(CONF_TUSERID, ""),
         pin=data.get(CONF_PIN, ""),
         email=data.get(CONF_EMAIL, ""),
+        phone=data.get(CONF_PHONE, ""),
+        area_code=str(data.get(CONF_AREA_CODE, DEFAULT_AREA_CODE) or DEFAULT_AREA_CODE),
         token_path=token_path or _pending_token_path(hass),
         src_dir=_CORE,
         tsp_host=data.get(CONF_TSP_HOST, DEFAULTS[CONF_TSP_HOST]),
@@ -185,23 +339,9 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "Omoda9OptionsFlow":
         return Omoda9OptionsFlow(config_entry)
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
-        reason = ""
-        if user_input is not None:
-            self._data.update(user_input)
-            ok, msg = await self.hass.async_add_executor_job(
-                _send_otp, self.hass, self._data
-            )
-            if ok:
-                return await self.async_step_otp()
-            errors["base"] = "otp_send_failed"
-            reason = _reason_line(msg)
-            _LOGGER.warning("Omoda9: invio OTP fallito: %s", msg)
-
-        schema = vol.Schema({
-            vol.Required(CONF_EMAIL): str,
-            vol.Required(CONF_PIN): str,
+    def _region_fields(self) -> dict:
+        """Campi opzionali di REGIONE, comuni a login email e telefono (default = Europa)."""
+        return {
             # Solo per regioni diverse dall'Europa / setup avanzato (default EU).
             vol.Optional(CONF_BFF, default=DEFAULTS[CONF_BFF]): str,
             vol.Optional(CONF_TSP_HOST, default=DEFAULTS[CONF_TSP_HOST]): str,
@@ -211,9 +351,75 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_CAR_MQTT_PORT, default=DEFAULTS[CONF_CAR_MQTT_PORT]): vol.Coerce(int),
             vol.Optional(CONF_CHANNEL_ID, default=DEFAULTS[CONF_CHANNEL_ID]): str,
             vol.Optional(CONF_CERTS_SRC, default=""): str,
+        }
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        """Scelta del metodo di accesso: e-mail oppure numero di telefono (SMS).
+
+        Alcuni account Omoda/Jaecoo sono registrati col NUMERO e non hanno e-mail: per loro
+        il login e-mail fallisce. Il ramo telefono manda un codice via SMS."""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["login_email", "login_phone"],
+        )
+
+    async def _submit_login(self, user_input: dict[str, Any], step_id: str, schema):
+        """Logica comune ai due login: salva i dati, prova a inviare l'OTP, va allo step OTP."""
+        self._data.update(user_input)
+        ok, msg = await self.hass.async_add_executor_job(_send_otp, self.hass, self._data)
+        if ok:
+            return await self.async_step_otp()
+        _LOGGER.warning("Omoda9: invio OTP fallito: %s", msg)
+        # Ripropone quanto già digitato: senza questo i campi tornano vuoti e — peggio — i
+        # parametri di REGIONE tornano ai default europei. Un utente fuori dall'Europa che
+        # non se ne accorge riprova con gli endpoint sbagliati, e se poi riesce si ritrova
+        # l'entry creato con quelli.
+        # ⚠️ Il PIN NO. `add_suggested_values_to_schema` riempie ogni chiave che trova, e il
+        # campo del PIN è un `str` normale, non un campo password: ri-proponendolo lo si
+        # rimanda a schermo in chiaro. Il resto del file tratta il PIN come credenziale da non
+        # far ricomparire nel form (vedi il passo di riconfigurazione), qui la cautela mancava.
+        schema = self.add_suggested_values_to_schema(
+            schema, {k: v for k, v in user_input.items() if k != CONF_PIN})
+        return self.async_show_form(step_id=step_id, data_schema=schema,
+                                    errors={"base": "otp_send_failed"},
+                                    description_placeholders={"reason": _reason_line(msg)})
+
+    async def async_step_login_email(self, user_input: dict[str, Any] | None = None):
+        """Login via e-mail (comportamento storico)."""
+        schema = vol.Schema({
+            vol.Required(CONF_EMAIL): str,
+            vol.Required(CONF_PIN): str,
+            **self._region_fields(),
         })
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors,
-                                    description_placeholders={"reason": reason})
+        if user_input is not None:
+            return await self._submit_login(user_input, "login_email", schema)
+        return self.async_show_form(step_id="login_email", data_schema=schema,
+                                    description_placeholders={"reason": ""})
+
+    async def async_step_login_phone(self, user_input: dict[str, Any] | None = None):
+        """Login via SMS: numero di telefono + prefisso internazionale (Italia = 39)."""
+        schema = vol.Schema({
+            vol.Required(CONF_PHONE): str,
+            vol.Required(CONF_AREA_CODE, default=DEFAULT_AREA_CODE): str,
+            vol.Required(CONF_PIN): str,
+            **self._region_fields(),
+        })
+        if user_input is not None:
+            user_input = dict(user_input)
+            numero, prefisso = _normalizza_telefono(
+                user_input.get(CONF_PHONE), user_input.get(CONF_AREA_CODE))
+            if not numero or not prefisso:
+                return self.async_show_form(
+                    step_id="login_phone",
+                    # PIN escluso: è una credenziale e il campo non è di tipo password.
+                    data_schema=self.add_suggested_values_to_schema(
+                        schema, {k: v for k, v in user_input.items() if k != CONF_PIN}),
+                    errors={"base": "phone_invalid"},
+                    description_placeholders={"reason": ""})
+            user_input[CONF_PHONE], user_input[CONF_AREA_CODE] = numero, prefisso
+            return await self._submit_login(user_input, "login_phone", schema)
+        return self.async_show_form(step_id="login_phone", data_schema=schema,
+                                    description_placeholders={"reason": ""})
 
     async def async_step_otp(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
@@ -277,19 +483,41 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     # ───────────────── Riconfigurazione PIN (senza smontare l'integrazione) ─────────────────
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
-        """Cambia SOLO il PIN a 4 cifre dei comandi remoti, senza OTP.
+        """Corregge il PIN dei comandi e — per gli account SMS — il NUMERO di telefono.
 
         Il PIN non serve al login (l'OTP conia il token, il PIN firma solo i comandi) →
         correggerlo è pura scrittura in entry.data + reload. È il rimedio al «PIN comandi
-        errato»: prima si doveva eliminare e riaggiungere l'integrazione."""
+        errato»: prima si doveva eliminare e riaggiungere l'integrazione.
+
+        ⚠️ Perché c'è anche il numero. Le persone cambiano numero di telefono molto più spesso
+        di quanto cambino indirizzo e-mail, e finché questo passo toccava il solo PIN chi
+        cambiava numero non aveva NESSUNA via d'uscita: la riautenticazione continuava a
+        spedire l'SMS al vecchio numero, e l'unico rimedio era eliminare e riaggiungere
+        l'integrazione — perdendo entity_id e storico di oltre cento entità. Lo stesso valeva
+        per un numero digitato male in fase di configurazione.
+
+        Il numero passa dalla STESSA normalizzazione del primo accesso: è il punto unico di
+        pulizia, e farne una seconda copia qui vorrebbe dire vederle divergere.
+
+        NB: cambiare il numero non tocca il token in corso — la sessione resta valida finché
+        non scade. Cambia solo dove arriverà il prossimo codice."""
         entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         errors: dict[str, str] = {}
         if entry is None:
             return self.async_abort(reason="reconfigure_no_entry")
+        # I campi del numero si mostrano solo a chi accede via SMS: a un account e-mail non
+        # servono, e offrirglieli lo inviterebbe a compilare un campo che non verrà mai usato.
+        account_sms = bool(entry.data.get(CONF_PHONE))
         if user_input is not None:
             new_pin = (user_input.get(CONF_PIN) or "").strip()
+            numero = prefisso = ""
+            if account_sms:
+                numero, prefisso = _normalizza_telefono(
+                    user_input.get(CONF_PHONE), user_input.get(CONF_AREA_CODE))
             if not new_pin:
                 errors["base"] = "pin_required"
+            elif account_sms and not numero:
+                errors["base"] = "phone_invalid"
             else:
                 # chiudi un eventuale avviso "PIN errato": il reload azzera l'anti-lockout
                 # (commands.reset_pin_lockout in _bind_core quando rileva il PIN cambiato).
@@ -298,16 +526,33 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # P0-2: reset INCONDIZIONATO prima del reload. `_bind_core` azzera solo
                 # se il PIN è cambiato → reinserire lo STESSO PIN lasciava il blocco attivo.
                 _clear_pin_lockout(self.hass, entry.entry_id)
-                return self.async_update_reload_and_abort(
-                    entry, data={**entry.data, CONF_PIN: new_pin})
+                dati = {**entry.data, CONF_PIN: new_pin}
+                if account_sms:
+                    dati[CONF_PHONE], dati[CONF_AREA_CODE] = numero, prefisso
+                return self.async_update_reload_and_abort(entry, data=dati)
         # P1-5: campo PASSWORD e NESSUN default col PIN attuale. Prima il PIN comandi
         # compariva in chiaro nel form (e nello screenshot che l'utente allega al supporto):
         # è una credenziale. Si riscrive da zero, mascherato.
-        schema = vol.Schema({
-            vol.Required(CONF_PIN): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.PASSWORD)
-            ),
-        })
+        campi: dict[Any, Any] = {}
+        if account_sms:
+            # Il numero attuale SÌ come valore predefinito, a differenza del PIN: non è una
+            # credenziale, e chi entra qui per cambiarne una cifra deve poter vedere da dove
+            # parte invece di riscriverlo a memoria.
+            campi[vol.Required(CONF_PHONE, default=entry.data.get(CONF_PHONE, ""))] = str
+            campi[vol.Required(
+                CONF_AREA_CODE,
+                default=entry.data.get(CONF_AREA_CODE, DEFAULT_AREA_CODE))] = str
+        campi[vol.Required(CONF_PIN)] = TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD))
+        schema = vol.Schema(campi)
+        if user_input is not None:
+            # Ripropone quanto digitato (numero compreso, già normalizzato), mai il PIN.
+            schema = self.add_suggested_values_to_schema(
+                schema, {k: v for k, v in user_input.items() if k != CONF_PIN})
+        # NB: nessun segnaposto riempito da qui. Una frase costruita in Python non passa dai
+        # file di traduzione e arriverebbe in italiano a un'interfaccia in inglese: la
+        # descrizione del passo copre entrambi i casi, e il campo del numero semplicemente non
+        # compare a chi accede con l'e-mail.
         return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
 
     # ───────────────── Riautenticazione nativa (sessione morta / app ufficiale aperta) ─────────────────
@@ -331,6 +576,23 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return (self.hass.config_entries.async_get_entry(entry_id),
                 self.hass.data.get(DOMAIN, {}).get(entry_id))
 
+    @staticmethod
+    def _login_identity(entry) -> str:
+        """Dove arriva il codice: e-mail oppure numero (+prefisso) per gli account SMS.
+
+        ⚠️ MASCHERATO. Questa stringa riempie i dialoghi di riautenticazione, cioè le
+        schermate su cui l'utente è bloccato quando chiede aiuto — quindi proprio quelle che
+        finiscono negli screenshot allegati alle issue. `coordinator._num_avviso` maschera lo
+        stesso dato per quel motivo esplicito; qui usciva per esteso, e la regola dichiarata
+        veniva disattesa nel file che la introduce. Le ultime 4 cifre bastano a riconoscere
+        «è il mio»."""
+        from .core import mask
+        phone = entry.data.get(CONF_PHONE, "")
+        if phone:
+            return mask.numero_con_prefisso(
+                phone, entry.data.get(CONF_AREA_CODE, DEFAULT_AREA_CODE))
+        return mask.indirizzo_email(entry.data.get(CONF_EMAIL, ""))
+
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
         """Menu della riautenticazione: due strade esplicite, nessun effetto collaterale.
 
@@ -339,12 +601,38 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry, coordinator = self._reauth_targets()
         if entry is None or coordinator is None:
             return self.async_abort(reason="reauth_no_entry")
+        # La terza voce compare SOLO agli account SMS e SOLO se il ripiego non c'è già: è un
+        # rimedio, non un passaggio obbligato, e va offerto come scelta esplicita perché costa
+        # uno scaricamento. Prima l'installazione partiva da sola all'inizio del login e del
+        # reauth, ed era la radice di una fila di guasti (vedi `_assicura_client_sms`).
+        opzioni = ["send_code", "enter_code"]
+        # In executor: `import curl_cffi` costa ~0,13 s e caricherebbe una libreria nativa da
+        # 38 MB dentro il loop degli eventi, a ogni apertura del menu. I guard-rail di Home
+        # Assistant non lo segnalerebbero (intercettano `importlib.import_module`, non
+        # l'istruzione `import`), quindi sarebbe un blocco reale e invisibile.
+        if entry.data.get(CONF_PHONE) and not await self.hass.async_add_executor_job(
+                _ripiego_gia_presente):
+            opzioni.append("install_fallback")
         return self.async_show_menu(
             step_id="reauth_confirm",
-            menu_options=["send_code", "enter_code"],
-            description_placeholders={"email": entry.data.get(CONF_EMAIL, ""),
+            menu_options=opzioni,
+            description_placeholders={"email": self._login_identity(entry),
                                       "reason": self._reauth_reason},
         )
+
+    async def async_step_install_fallback(self, user_input: dict[str, Any] | None = None):
+        """Installa il client TLS di ripiego, su richiesta esplicita dell'utente.
+
+        Serve solo nel caso in cui il filtro anti-bot del server abbia respinto tutti i client
+        che il componente sa usare da solo. Qualunque sia l'esito si torna al menu con una
+        frase che lo dice: non si resta mai bloccati qui."""
+        ok = await _assicura_client_sms(self.hass)
+        self._reauth_reason = _reason_line(
+            "client TLS di ripiego installato: prova di nuovo a farti mandare il codice" if ok
+            else "non è stato possibile installare il client TLS di ripiego su questo sistema "
+                 "(spesso è la rete: riprova più tardi, oppure riavvia Home Assistant se "
+                 "l'errore si ripete identico)")
+        return await self.async_step_reauth_confirm()
 
     async def async_step_send_code(self, user_input: dict[str, Any] | None = None):
         """Invia un codice OTP nuovo — SOLO su gesto esplicito dell'utente."""
@@ -386,7 +674,7 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({vol.Required("code"): str})
         return self.async_show_form(
             step_id="enter_code", data_schema=schema, errors=errors,
-            description_placeholders={"email": entry.data.get(CONF_EMAIL, ""),
+            description_placeholders={"email": self._login_identity(entry),
                                       "reason": self._reauth_reason})
 
 

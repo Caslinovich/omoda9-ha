@@ -3,6 +3,14 @@
     "step": {
       "user": {
         "title": "Omoda 9 / Jaecoo",
+        "description": "Scegli come accedere al tuo account Omoda/Jaecoo. Usa l'opzione telefono se il tuo account è registrato con un numero di telefono invece che con un'email.",
+        "menu_options": {
+          "login_email": "Accedi con email",
+          "login_phone": "Accedi con numero di telefono (SMS)"
+        }
+      },
+      "login_email": {
+        "title": "Accedi con email",
         "description": "Inserisci l'email del tuo account Omoda/Jaecoo e il PIN del veicolo. Riceverai un codice OTP via email; VIN e ID account vengono rilevati automaticamente.{reason}",
         "data": {
           "email": "Email dell'account",
@@ -15,9 +23,24 @@
           "certs_src": "Cartella coi certificati mutual-TLS da importare (opzionale)"
         }
       },
+      "login_phone": {
+        "title": "Accedi con telefono (SMS)",
+        "description": "Inserisci il numero di telefono registrato sul tuo account Omoda/Jaecoo, il prefisso internazionale (Italia = 39, senza +) e il PIN del veicolo. Riceverai un codice via SMS; VIN e ID account vengono rilevati automaticamente.{reason}",
+        "data": {
+          "phone": "Numero di telefono (senza prefisso)",
+          "area_code": "Prefisso internazionale in cifre (es. 39)",
+          "pin": "PIN di controllo veicolo",
+          "bff": "Endpoint BFF (regione)",
+          "tsp_host": "Host console TSP (regione)",
+          "car_mqtt_host": "Host broker MQTT del veicolo (regione)",
+          "car_mqtt_port": "Porta broker MQTT del veicolo (regione)",
+          "channel_id": "Channel ID (regione)",
+          "certs_src": "Cartella coi certificati mutual-TLS da importare (opzionale)"
+        }
+      },
       "otp": {
-        "title": "Codice di verifica email",
-        "description": "Inserisci il codice OTP ricevuto via email.{reason}",
+        "title": "Codice di verifica",
+        "description": "Inserisci il codice OTP ricevuto (via email o SMS).{reason}",
         "data": {
           "code": "Codice OTP"
         }
@@ -30,18 +53,21 @@
         }
       },
       "reconfigure": {
-        "title": "Cambia il PIN dei comandi",
-        "description": "Inserisci il PIN a 4 cifre usato per i comandi remoti. Il PIN non serve per l'accesso, quindi non è richiesto alcun codice via email. Correggilo se i comandi risultano \"riusciti\" ma l'auto non fa nulla (PIN errato).",
+        "title": "Correggi PIN e numero di telefono",
+        "description": "Cambia il PIN a 4 cifre usato per i comandi remoti e — se accedi via SMS — il numero di telefono a cui arriva il codice.\n\nIl PIN non serve per l'accesso, quindi qui non viene richiesto alcun codice. Correggilo se i comandi risultano «riusciti» ma l'auto non fa nulla (PIN errato). Cambia il numero se hai cambiato scheda telefonica: la sessione in corso resta valida, cambia solo dove arriverà il prossimo codice.",
         "data": {
-          "pin": "PIN di controllo veicolo"
+          "pin": "PIN di controllo veicolo",
+          "phone": "Numero di telefono (senza prefisso internazionale)",
+          "area_code": "Prefisso internazionale, solo cifre (Italia = 39)"
         }
       },
       "reauth_confirm": {
         "title": "Ri-autentica Omoda 9 / Jaecoo",
         "description": "La sessione è scaduta: finché non riautentichi l'integrazione non riesce a parlare con l'auto e comandi e sensori restano fermi.\n\n**Nessun codice è stato inviato in automatico.** Scegli «Inviami un codice nuovo» per riceverne uno fresco a {email}.{reason}",
         "menu_options": {
-          "send_code": "Inviami un codice nuovo via email",
-          "enter_code": "Ho già un codice valido"
+          "send_code": "Inviami un codice nuovo",
+          "enter_code": "Ho già un codice valido",
+          "install_fallback": "Installa il client TLS di ripiego (scaricamento, ~12 MB)"
         }
       },
       "enter_code": {
@@ -53,11 +79,12 @@
       }
     },
     "error": {
-      "otp_send_failed": "Impossibile inviare il codice OTP. Controlla email/PIN e riprova.",
+      "otp_send_failed": "Impossibile inviare il codice. Controlla email/telefono e PIN e riprova.",
       "otp_invalid": "Codice OTP non valido o scaduto.",
       "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account.",
       "pin_required": "Inserisci il PIN di controllo veicolo.",
-      "otp_required": "Inserisci il codice che hai ricevuto via email."
+      "otp_required": "Inserisci il codice che hai ricevuto.",
+      "phone_invalid": "Questo numero non sembra giusto. Scrivi solo le cifre del numero, senza prefisso internazionale e senza spazi; nell'altro campo metti solo le cifre del prefisso (Italia = 39)."
     },
     "abort": {
       "already_configured": "Questo veicolo (VIN) è già configurato.",

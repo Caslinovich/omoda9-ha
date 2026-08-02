@@ -25,12 +25,19 @@ riga-sentinella stabile `RESULT: OK` / `RESULT: FAIL` e usano il returncode (0 o
 errore). request_otp/confirm_otp decidono l'esito su returncode + sentinella, NON su
 sottostringhe localizzate (che cambierebbero con la lingua dei messaggi).
 """
-import os, sys, subprocess, time
+import os, sys, subprocess, time, logging
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+_LOGGER = logging.getLogger(__name__)
 
 # P2-2: import relativo di pacchetto (prima: nome nudo + `sys.path.insert(HERE)`).
 from . import wake  # riusa _bff_login / _refresh_token / TOKEN_PATH
+from . import mask  # mascheratura unica dei dati personali nelle frasi che escono da qui
+
+# Marcatore con cui i sottoprocessi dichiarano la CAUSA di un fallimento (login_omoda.MOTIVO).
+# Duplicato qui di proposito: importare `login_omoda` da questo modulo significherebbe tirarsi
+# dentro `requests` e il risolutore di captcha solo per leggere una costante di sette caratteri.
+_MOTIVO = "MOTIVO:"
 
 # P2-6: email e cartella sorgenti arrivano dal `CoreCtx` del veicolo, non più da global
 # di modulo popolati da os.environ.
@@ -133,8 +140,21 @@ def _subenv(ctx, **extra):
     passare le stesse informazioni in argv le renderebbe visibili a tutta la macchina.
     Perciò la configurazione del contesto viene serializzata qui, per quella sola chiamata."""
     env = dict(os.environ)
+    # ⚠️ I pacchetti che Home Assistant installa a RUNTIME (qui: il client TLS di ripiego)
+    # possono finire in `<config>/deps`, che HA aggiunge al `sys.path` del PROPRIO processo e
+    # basta — non esporta `PYTHONPATH`. Un sottoprocesso lanciato con lo stesso interprete non
+    # li vedrebbe, e l'utente leggerebbe «installa curl_cffi» con curl_cffi già installato.
+    # Il percorso si ricava dal token, che vive nella cartella di configurazione. Si accoda a
+    # un `PYTHONPATH` esistente invece di sostituirlo, per non spegnere configurazioni altrui.
+    deps = os.path.join(os.path.dirname(os.path.abspath(ctx.token_path)), "deps")
+    if os.path.isdir(deps):
+        env["PYTHONPATH"] = os.pathsep.join(
+            [p for p in (env.get("PYTHONPATH", ""), deps) if p])
     env.update({
         "OMODA_EMAIL": ctx.email,
+        # login via SMS: se il telefono è valorizzato, i sottoprocessi usano il ramo mobile
+        "OMODA_PHONE": getattr(ctx, "phone", "") or "",
+        "OMODA_AREA": getattr(ctx, "area_code", "39") or "39",
         "OMODA_TOKEN_PATH": ctx.token_path,
         "OMODA_BFF": ctx.bff,
         "TSP_HOST": ctx.tsp_host,
@@ -148,25 +168,82 @@ def _subenv(ctx, **extra):
     return env
 
 
+def _is_phone(ctx) -> bool:
+    """True se questo account fa login via SMS (telefono valorizzato)."""
+    return bool(getattr(ctx, "phone", "") or "")
+
+
+def _num_mascherato(numero) -> str:
+    """Ultime 4 cifre, il resto oscurato — vedi `core/mask.py` per la regola unica.
+
+    ⚠️ Va applicato ALLA SORGENTE, non solo in fondo: le stringhe passate a `emit` non
+    restano nel config flow — finiscono in `session_detail`, che è insieme lo stato di
+    `sensor.omoda9_stato_sessione` (quindi recorder e backup) e un campo esportato
+    VERBATIM nel file «Scarica diagnostica», fuori da ogni deny-list. Mascherare qui
+    chiude i tre canali in un colpo solo; aggiungere `phone` a `TO_REDACT` non basterebbe,
+    perché lì il numero è testo libero dentro una frase."""
+    return mask.numero(numero)
+
+
+def _riga_utile(out: str, rc: int) -> str:
+    """La riga dell'output del sottoprocesso che spiega davvero cos'è andato storto.
+
+    Due passaggi, in quest'ordine:
+
+    1. **La riga marcata `MOTIVO:`**, se c'è. È la causa dichiarata esplicitamente dal
+       sottoprocesso (`login_omoda._motivo`). Serve perché «l'ultima riga significativa» è un
+       criterio fragile: quando la causa veniva stampata per prima e seguita da due righe di
+       spiegazione, all'utente arrivava la coda di una frase («…pip install curl_cffi)») e
+       l'errore vero spariva — proprio nel caso in cui la diagnosi serviva di più. Il marcatore
+       è stabile: non dipende dall'ordine delle stampe né dal testo dei messaggi.
+    2. Altrimenti, l'ultima riga significativa. Non l'ultima e basta: `login_omoda._emit_result`
+       e `prova_token` chiudono sempre con la sentinella `RESULT: OK/FAIL`, quindi prendendo
+       `[-1]` all'utente arrivava invariabilmente «RESULT: FAIL»."""
+    righe = [r.strip() for r in (out or "").strip().splitlines()
+             if r.strip() and not r.strip().startswith("RESULT:")]
+    motivi = [r[len(_MOTIVO):].strip() for r in righe if r.startswith(_MOTIVO)]
+    if motivi:
+        return motivi[-1]
+    return righe[-1] if righe else f"rc={rc}"
+
+
 def request_otp(ctx, emit=lambda m: None):
-    """Invia il codice OTP alla mail dell'utente. True se l'invio è andato a buon fine."""
-    email, src_dir, timeout = ctx.email, ctx.src_dir, _timeout()
-    emit("invio codice OTP alla mail…")
+    """Invia il codice OTP all'utente (email o SMS). True se l'invio è andato a buon fine."""
+    src_dir, timeout = ctx.src_dir, _timeout()
+    phone = _is_phone(ctx)
+    # ramo mobile (SMS) vs email — l'invio SMS supera il WAF con la scala di client TLS di
+    # `core/tls_client.py` (nessuna dipendenza obbligatoria: vedi lì il perché)
+    cmd = ["login_omoda.py", "invia-sms"] if phone else ["login_omoda.py", "invia"]
+    # ⚠️ MASCHERATI ENTRAMBI i rami. Qui il telefono era mascherato e l'e-mail no, nella
+    # stessa espressione: la frase risultante («Codice inviato alla mail …») diventa
+    # `session_detail`, che finisce verbatim nel file «Scarica diagnostica» — quello che il
+    # README invita ad allegare alle issue di una repo PUBBLICA — e nello stato di
+    # `sensor.omoda9_stato_sessione`, quindi in PostgreSQL e in ogni backup. L'intestazione di
+    # `diagnostics.py` prometteva già «email → oscurata»: era falsa a partire da questa riga.
+    dove = (f"al numero {mask.numero_con_prefisso(ctx.phone, ctx.area_code)}" if phone
+            else f"alla mail {mask.indirizzo_email(ctx.email)}")
+    emit(f"invio codice OTP {('via SMS ' if phone else '')}…")
     try:
-        # email via env (P1-4), non in argv: login_omoda.py la rilegge da OMODA_EMAIL.
-        r = subprocess.run([PYEXE, "login_omoda.py", "invia"],
+        # identità via env (P1-4), non in argv: login_omoda.py rilegge OMODA_EMAIL / OMODA_PHONE.
+        r = subprocess.run([PYEXE, *cmd],
                            cwd=src_dir, capture_output=True, text=True, timeout=timeout,
                            env=_subenv(ctx))
     except subprocess.TimeoutExpired:
         emit("timeout invio OTP — riprova")
+        _LOGGER.warning("Omoda9 login: timeout invio OTP (%s)", "SMS" if phone else "email")
         return False
     out = (r.stdout or "") + (r.stderr or "")
+    # LOG per il debug/supporto: l'output del sottoprocesso (stato HTTP, chiave server, captcha).
+    # ⚠️ DEBUG, non INFO: a INFO finirebbe in home-assistant.log di serie, e quel file l'utente
+    # lo allega alle issue pubbliche. Il numero è già mascherato alla sorgente (login_omoda._mask)
+    # ma il livello resta debug per prudenza: chi deve diagnosticare alza il livello e basta.
+    _LOGGER.debug("Omoda9 login: invio OTP (%s) rc=%s\n%s",
+                  "SMS" if phone else "email", r.returncode, out.strip())
     # H7: esito su returncode + sentinella stabile, non su sottostringhe localizzate
     if r.returncode == 0 and "RESULT: OK" in out:
-        emit(f"📧 Codice inviato a {email} — inseriscilo nel campo «Codice OTP» e premi «Conferma»")
+        emit(f"{'📱' if phone else '📧'} Codice inviato {dove} — inseriscilo nel campo «Codice OTP» e premi «Conferma»")
         return True
-    tail = out.strip().splitlines()[-1] if out.strip() else f"rc={r.returncode}"
-    emit(f"invio OTP fallito: {tail[:120]}")
+    emit(f"invio OTP fallito: {_riga_utile(out, r.returncode)[:120]}")
     return False
 
 
@@ -186,12 +263,16 @@ def confirm_otp(ctx, code, emit=lambda m: None):
     except subprocess.TimeoutExpired:
         return False, "timeout conio token"
     out = (r.stdout or "") + (r.stderr or "")
+    # LOG per il debug/supporto: prova_token stampa la FORMA del tentativo (identità mascherata,
+    # lunghezza del codice, stato HTTP, chiave server). Token redatti da prova_token._redact,
+    # OTP e numero mai in chiaro. ⚠️ DEBUG e non INFO: vedi la nota in request_otp.
+    _LOGGER.debug("Omoda9 login: conio token (%s) rc=%s\n%s",
+                  "SMS" if _is_phone(ctx) else "email", r.returncode, out.strip())
     # H7: esito su returncode + sentinella stabile, non su sottostringhe localizzate
     if r.returncode == 0 and "RESULT: OK" in out:
         ok, _detail, _status = check(ctx)
         return ok, ("Sessione ripristinata ✅" if ok else "token coniato ma login ancora KO")
-    tail = out.strip().splitlines()[-1] if out.strip() else f"rc={r.returncode}"
-    return False, f"codice rifiutato: {tail[:120]}"
+    return False, f"codice rifiutato: {_riga_utile(out, r.returncode)[:120]}"
 
 
 if __name__ == "__main__":

@@ -35,6 +35,12 @@ import re
 # divergano c'è `tests/test_mask.py::test_il_pattern_email_non_diverge_da_diag`.
 RE_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
+# La forma GIÀ mascherata (`m***@dominio.it`). Serve perché `RE_EMAIL` non la riconosce — un
+# asterisco non è un carattere ammesso prima della chiocciola — e senza questo pattern il
+# dominio, che nella frase a schermo è voluto, sopravviveva anche nel file di supporto
+# pubblicato. I due canali vogliono cose diverse e vanno serviti separatamente.
+RE_EMAIL_MASCHERATA = re.compile(r"[A-Za-z0-9._%+-]*\*+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
 # Quante cifre finali si lasciano vedere. Bastano a far dire all'utente «sì, è il mio numero»
 # senza che chi legge il log possa richiamarlo.
 CODA = 4
@@ -59,24 +65,37 @@ def numero(valore) -> str:
 
 
 def numero_con_prefisso(valore, prefisso) -> str:
-    """`+39 ***1234` — la forma usata nei testi rivolti all'utente."""
-    return f"+{prefisso} {numero(valore)}"
+    """`+39 ***1234` — la forma usata nei testi rivolti all'utente.
+
+    Il prefisso viene ridotto alle sole cifre: arriva da un campo di testo libero e da variabili
+    d'ambiente, e senza questo passaggio uscivano frasi come `++39 ***1234` o `+None ***`, che
+    fanno sembrare rotta l'integrazione proprio nel messaggio che dovrebbe rassicurare."""
+    cifre = solo_cifre(prefisso).lstrip("0")
+    return f"+{cifre} {numero(valore)}" if cifre else numero(valore)
 
 
 def indirizzo_email(valore) -> str:
     """`mario.rossi@example.com` → `m***@example.com`.
 
     Si tiene la prima lettera e il dominio: l'utente riconosce il proprio indirizzo nel form,
-    e chi legge un log non ha la parte che identifica la persona. ⚠️ Il dominio resta visibile,
-    e per un indirizzo aziendale racconta comunque dove uno lavora: per questo `diagnostics.py`
-    applica in fondo anche una passata che sostituisce **qualunque** indirizzo con `**EMAIL**`,
-    così ciò che esce nel file di supporto non ne conserva traccia. Qui si sceglie il compromesso
-    leggibile perché la stessa frase è anche quella che l'utente legge a schermo."""
-    s = str(valore or "").strip()
-    locale, chiocciola, dominio = s.partition("@")
-    if not chiocciola or not dominio:
+    e chi legge un log non ha la parte che identifica la persona.
+
+    ⚠️ IL DOMINIO RESTA — a schermo. Per un indirizzo aziendale racconta dove uno lavora, e
+    sarebbe troppo per un file pubblicato; ma toglierlo dalla frase che l'utente legge mentre
+    aspetta il codice gli toglierebbe l'unica conferma che il codice sta andando dove deve.
+    I due canali vogliono cose diverse, e vengono serviti separatamente: qui la forma
+    leggibile, e in fondo a `diagnostics.py` una passata che sostituisce **anche questa forma
+    mascherata** con `**EMAIL**` (per quello esiste `RE_EMAIL_MASCHERATA`: `RE_EMAIL` da sola
+    non la riconosce, perché prima della chiocciola c'è un asterisco). Nel file di supporto il
+    dominio quindi non c'è; nel dialogo sì."""
+    s = str(valore).strip() if isinstance(valore, str) else ""
+    # `rpartition`, non `partition`: con `a@@b.com` la parte locale è `a@` e il dominio è
+    # `b.com`. Tagliando sulla PRIMA chiocciola il dominio restava intero dentro ciò che si
+    # credeva la parte locale, e usciva in chiaro.
+    locale, chiocciola, dominio = s.rpartition("@")
+    if not chiocciola or not dominio or not locale:
         return OSCURATO
-    return f"{locale[0]}{OSCURATO}@{dominio}" if locale else f"{OSCURATO}@{dominio}"
+    return f"{locale[0]}{OSCURATO}@{dominio}"
 
 
 def identita_mobile(valore) -> str:
@@ -87,9 +106,20 @@ def identita_mobile(valore) -> str:
     tira a indovinare: si maschera tutto tranne la coda."""
     s = str(valore or "")
     testa, chiocciola, coda = s.rpartition("@")
+    # ⚠️ La testa si ristampa SOLO se è il modulo che ci aspettiamo. `rpartition` da sola non
+    # verifica nulla: con un ingresso come `mario@rossi.it_39` la «testa» sarebbe `mario` e
+    # sarebbe uscita in chiaro. Qui non si sa che cosa sia quella stringa, quindi non la si
+    # ripete: la regola di questo modulo è che nel dubbio non passa niente.
+    # Il modulo che produciamo è `APP-LOGIN`: lettere MAIUSCOLE e trattini. Richiederlo in
+    # quella forma, e non «una qualunque parola», è ciò che distingue un'identità nostra da una
+    # stringa arbitraria — `mario@rossi.it_39` passava il controllo «è alfabetico» e usciva col
+    # nome in chiaro. Se un domani il modulo cambiasse forma, la mascheratura diventerebbe più
+    # aggressiva, mai più permissiva: è il verso giusto in cui sbagliare.
+    modulo_noto = bool(chiocciola) and testa.isascii() and testa.isupper() \
+        and testa.replace("-", "").isalpha()
     corpo = coda if chiocciola else s
     num, sep, area = corpo.rpartition("_")
-    prefisso_testa = f"{testa}@" if chiocciola else ""
+    prefisso_testa = f"{testa}@" if modulo_noto else ""
     if not sep:                                   # forma inattesa: nessuna deduzione
         return f"{prefisso_testa}{numero(corpo)}"
     return f"{prefisso_testa}{numero(num)}{sep}{area}"

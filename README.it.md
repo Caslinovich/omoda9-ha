@@ -14,8 +14,9 @@
 Porta la tua auto **Omoda 9 / Jaecoo** dentro **Home Assistant**: stato del
 veicolo, posizione e comandi, come nell'app ufficiale ma integrati in HA.
 
-> ✅ **Pronto all'uso.** Per partire bastano **email + PIN** del tuo account
-> Omoda/Jaecoo (più un **codice OTP** ricevuto via email al primo accesso). VIN e
+> ✅ **Pronto all'uso.** Per partire bastano **email (oppure numero di telefono) +
+> PIN** del tuo account Omoda/Jaecoo, più un **codice OTP** ricevuto via email o
+> **SMS** al primo accesso. VIN e
 > certificati vengono rilevati e installati **da soli**. Il pacchetto **non
 > contiene alcun dato personale**: token e credenziali restano solo nel *tuo*
 > Home Assistant.
@@ -48,10 +49,16 @@ veicolo, posizione e comandi, come nell'app ufficiale ma integrati in HA.
 
 Tutto avviene **dentro Home Assistant**, niente strumenti esterni:
 
-1. Inserisci **email** e **PIN** dell'account (gli endpoint regionali sono
-   opzionali, default Europa). HA invia un **codice OTP** alla tua email.
-2. Inserisci il **codice OTP** → HA crea la sessione e scopre i tuoi veicoli.
-3. Se hai più auto scegli il **VIN**; se è una sola viene aggiunta direttamente,
+1. Scegli **come accedere**: con l'**email** oppure con il **numero di telefono
+   (SMS)**. Se il tuo account Omoda/Jaecoo è registrato col numero e non ha un
+   indirizzo email, usa la seconda: con la prima il login non può funzionare.
+2. Inserisci le credenziali e il **PIN** dell'account (gli endpoint regionali
+   sono opzionali, default Europa):
+   - **email** → HA invia un **codice OTP** alla tua casella;
+   - **telefono** → numero **senza prefisso** e prefisso internazionale in cifre
+     (Italia = `39`, senza `+`) → HA fa partire un **SMS** col codice.
+3. Inserisci il **codice** ricevuto → HA crea la sessione e scopre i tuoi veicoli.
+4. Se hai più auto scegli il **VIN**; se è una sola viene aggiunta direttamente,
    con tutte le entità.
 
 Se in futuro la sessione scade (di solito perché hai aperto l'app ufficiale),

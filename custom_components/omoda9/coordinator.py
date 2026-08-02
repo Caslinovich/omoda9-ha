@@ -11,6 +11,7 @@ DALL'entry prima di importarli (assunzione: una sola auto per istanza HA).
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -32,6 +33,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     DOMAIN, CAR_SEED, DEFAULT_AWAKE_WINDOW, DEFAULT_SESSION_EVERY, CERT_FILES,
     CONF_VIN, CONF_TUSERID, CONF_PIN, CONF_EMAIL, CONF_CERTS_SRC,
+    CONF_PHONE, CONF_AREA_CODE, DEFAULT_AREA_CODE,
     CONF_BFF, CONF_TSP_HOST, CONF_CAR_MQTT_HOST, CONF_CAR_MQTT_PORT, CONF_CHANNEL_ID,
     CONF_POLL_NORMAL, CONF_POLL_CHARGING, DEFAULT_POLL_NORMAL_MIN,
     DEFAULT_POLL_CHARGING_MIN, POLL_WAKE_WAIT, COMMAND_SETTLE_S, COMMAND_QUEUE_WAIT,
@@ -218,6 +220,10 @@ class Omoda9Coordinator(DataUpdateCoordinator):
         self.pin = cfg.get(CONF_PIN, "")
         self.bff = cfg[CONF_BFF]
         self.email = cfg.get(CONF_EMAIL, "")
+        # login via SMS (alternativa all'email): se il telefono è valorizzato, la
+        # riautenticazione userà il ramo mobile. area_code = prefisso in cifre.
+        self.phone = cfg.get(CONF_PHONE, "")
+        self.area_code = str(cfg.get(CONF_AREA_CODE, DEFAULT_AREA_CODE) or DEFAULT_AREA_CODE)
 
         # identità veicolo per il device HA. Priorità: override manuale (opzioni) →
         # valore salvato in entry.data (config flow / backfill) → None (→ fallback in entity.py).
@@ -387,7 +393,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             return
         jsonl = self.hass.config.path(f"{DOMAIN}_{self.vin}_diag.jsonl")
         self._diag = await self.hass.async_add_executor_job(
-            DiagRecorder, jsonl, self.vin, self.email, until
+            # il telefono va passato come vin/email: negli account SMS è l'identità di login
+            functools.partial(DiagRecorder, jsonl, self.vin, self.email, until,
+                              phone=self.phone)
         )
         if until == math.inf:
             _LOGGER.warning(
@@ -948,6 +956,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
             tuserid=self.tuserid,
             pin=self.pin,
             email=self.email,
+            phone=self.phone,
+            area_code=self.area_code,
             token_path=self.token_path,
             # taskId nella config dir per-VIN: sopravvive agli update HACS e non è
             # condiviso fra veicoli.
@@ -1431,6 +1441,39 @@ class Omoda9Coordinator(DataUpdateCoordinator):
     def _id_avviso(self) -> str:
         return f"{DOMAIN}_sessione_{self.entry.entry_id}"
 
+    def _num_avviso(self) -> str:
+        """Numero mascherato per i testi rivolti all'utente. Le ultime 4 cifre bastano a
+        riconoscere «è il mio», e la notifica finisce negli screenshot che si allegano alle
+        richieste di aiuto. Regola unica in `core/mask.py`: qui la copia locale ometteva gli
+        asterischi quando il numero era corto, restituendo il solo prefisso."""
+        from .core import mask
+        return mask.numero_con_prefisso(self.phone, self.area_code)
+
+    def _mail_avviso(self) -> str:
+        """E-mail mascherata per i testi rivolti all'utente.
+
+        ⚠️ Stessa ragione del numero, e stessa asimmetria da non ripetere: qui il telefono era
+        mascherato e l'indirizzo usciva per esteso, dieci righe sotto la docstring che spiega
+        perché mascherare («la notifica finisce negli screenshot che si allegano alle richieste
+        di aiuto»). Per un indirizzo aziendale l'indirizzo dice anche dove uno lavora."""
+        from .core import mask
+        return mask.indirizzo_email(self.email)
+
+    def _dove_arriva_it(self) -> str:
+        """Dove arriva il codice. ⚠️ Non si può dire «via email» a chi si è registrato col
+        NUMERO: per quegli account `self.email` è la stringa vuota, e la frase usciva
+        troncata («il codice arriverà a .»). Il verbo cambia col canale, non solo il valore."""
+        if self.phone:
+            return f"il codice arriverà via SMS al numero {self._num_avviso()}"
+        return f"il codice arriverà via email a {self._mail_avviso()}" if self.email else \
+               "il codice ti verrà inviato"
+
+    def _dove_arriva_en(self) -> str:
+        if self.phone:
+            return f"the code will be sent by SMS to {self._num_avviso()}"
+        return f"the code will be emailed to {self._mail_avviso()}" if self.email else \
+               "the code will be sent to you"
+
     def _avvisa_sessione_morta(self) -> None:
         from homeassistant.components import persistent_notification
 
@@ -1441,8 +1484,7 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 f"L'integrazione non riesce più a parlare con l'auto: comandi e sensori "
                 f"restano fermi finché non riautentichi.\n\n"
                 f"Vai su **Impostazioni → Dispositivi e servizi → Omoda 9 / Jaecoo → "
-                f"Riautentica** e scegli **«Inviami un codice nuovo»**: il codice arriverà "
-                f"a {self.email}.\n\n"
+                f"Riautentica** e scegli **«Inviami un codice nuovo»**: {self._dove_arriva_it()}.\n\n"
                 f"Nessun codice è stato inviato in automatico — parte solo se lo chiedi tu."
             )
         else:
@@ -1451,8 +1493,8 @@ class Omoda9Coordinator(DataUpdateCoordinator):
                 f"The integration can no longer talk to the car: commands and sensors "
                 f"stay frozen until you re-authenticate.\n\n"
                 f"Go to **Settings → Devices & services → Omoda 9 / Jaecoo → "
-                f"Reconfigure/Re-authenticate** and pick **“Send me a new code”**: it will "
-                f"be emailed to {self.email}.\n\n"
+                f"Reconfigure/Re-authenticate** and pick **“Send me a new code”**: "
+                f"{self._dove_arriva_en()}.\n\n"
                 f"No code was sent automatically — one is only sent when you ask for it."
             )
         persistent_notification.async_create(
@@ -1475,7 +1517,9 @@ class Omoda9Coordinator(DataUpdateCoordinator):
 
     # ───────────────── recupero sessione (OTP da HA) ─────────────────
     async def async_request_otp(self) -> str:
-        """Invia il codice OTP all'email dell'account (button «Richiedi OTP»)."""
+        """Invia il codice OTP all'utente — via email o via SMS, secondo com'è registrato
+        l'account (button «Richiedi OTP»). Il ramo lo sceglie `session.request_otp` guardando
+        `ctx.phone`, che arriva da qui: vedi il contesto costruito più sopra."""
         _ok, detail = await self.hass.async_add_executor_job(self._request_otp)
         return detail
 

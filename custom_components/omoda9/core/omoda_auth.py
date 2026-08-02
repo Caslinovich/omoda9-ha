@@ -120,7 +120,7 @@ def sign_post(url_path: str, ts_ms: int=None, secret: str=SIGN_SECRET, nonce: st
 DEPT_ID = "39"   # CountryArea.value() per Italia (mappa paese->prefisso, da area_config.dart). Francia=33, Germania=49...
 
 def headers_post(url_path: str, secret: str=SIGN_SECRET, nonce: str=SIGN_NONCE,
-                 dept_id: str=DEPT_ID, extra=None, ctx=None):
+                 dept_id: str=None, extra=None, ctx=None):
     """Header firmati per una POST. `ctx` (CoreCtx) fornisce i parametri di regione.
 
     P2-6: senza contesto si ripiega sui default di modulo — serve solo alla diagnostica
@@ -129,6 +129,19 @@ def headers_post(url_path: str, secret: str=SIGN_SECRET, nonce: str=SIGN_NONCE,
     channel_id = ctx.channel_id if ctx is not None else CHANNEL_ID
     country_id = ctx.country_id if ctx is not None else COUNTRY_ID
     tenant = ctx.tenant_code if ctx is not None else TENANT_CODE
+    # `DEPT-ID` è, per ammissione della mappa da cui è stato estratto, il PREFISSO del Paese:
+    # Italia 39, Francia 33, Germania 49. Con l'arrivo del login via SMS il prefisso è
+    # diventato un dato che l'utente sceglie, e restava scollegato da qui: a un tedesco si
+    # spediva `DEPT-ID: 39`. Se il gateway lo controlla, il login non poteva riuscire; se lo
+    # ignora, non cambia nulla. Per un account italiano il valore resta identico a prima, e
+    # per gli altri passa da certamente-sbagliato a probabilmente-giusto.
+    # ⚠️ NON verificato dal vivo: servirebbe un account registrato fuori dall'Italia.
+    # `None` = «non specificato dal chiamante» → si guarda il contesto, poi il default. Non si
+    # confronta col default (`dept_id is DEPT_ID`): funzionerebbe per caso, dipendendo
+    # dall'identità degli oggetti stringa.
+    if dept_id is None:
+        dept_id = str(getattr(ctx, "area_code", "") or "") if ctx is not None else ""
+        dept_id = dept_id or DEPT_ID
     sig, ts = sign_post(url_path, secret=secret, nonce=nonce)
     # Set header COMPLETO come l'app (http_config.dart headersJson + headerSignature).
     # Content-Type/Authorization sono override dell'extraHeaderParams del builder token.

@@ -77,6 +77,8 @@ REDACT_KEYS = {
     # restano coperti dalla passata regex su esadecimale lungo/JWT/PEM.
     "privatekey", "secretkey", "apikey", "appkey", "keyfile", "clientkey",
     "vin", "carvin", "seq", "nickname", "fullname", "plate", "targa",
+    # identità di login degli account SMS: dato personale che non scade (vedi diagnostics.py)
+    "phone", "mobile", "area_code", "areacode", "telefono",
 }
 
 # Chiavi RIMOSSE del tutto, non mascherate: la posizione non deve uscire in nessuna forma.
@@ -118,6 +120,10 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"-----BEGIN[^-]{0,50}-----.*?-----END[^-]{0,50}-----", re.S), "**PEM**"),
     (re.compile(r"-----BEGIN[^-]{0,50}-----"), "**PEM**"),
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+){0,2}"), "**JWT**"),
+    # ⚠️ Stesso identico pattern di `core.mask.RE_EMAIL`, e deve restare tale. Non lo si
+    # importa di proposito: questo modulo è caricato ANCHE da solo, fuori dal pacchetto
+    # (`tests/test_diag_redaction.py` lo apre con importlib), quindi non può avere import
+    # relativi. A tenere allineate le due copie ci pensa un test dedicato.
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "**EMAIL**"),
     (re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b"), "**VIN**"),
     (re.compile(r"\b\d{15,}\b"), "**NUM**"),          # tUserId & affini (id numerici lunghi)
@@ -236,10 +242,13 @@ class DiagRecorder:
     """Ring buffer + contatori + file JSONL rotante, tutto già redatto alla sorgente."""
 
     def __init__(self, jsonl_path: str, vin: str = "", email: str = "",
-                 until: float | None = None) -> None:
+                 until: float | None = None, phone: str = "") -> None:
         self.path = jsonl_path
         self.until = until
-        self._extra = tuple(v for v in (vin, email) if v)
+        # `_extra` = valori da togliere ovunque compaiano come SOTTOSTRINGA, anche dentro
+        # campi dal nome ignoto. `phone` è qui per la stessa ragione di vin/email: negli
+        # account SMS è l'identità di login e può comparire dentro messaggi discorsivi.
+        self._extra = tuple(v for v in (vin, email, phone) if v)
         self._lock = threading.Lock()
         self._events: deque[dict] = deque(maxlen=BUFFER_MAX)
         self._counters: Counter[str] = Counter()

@@ -51,6 +51,12 @@ CONF_EMAIL = "email"
 CONF_PIN = "pin"
 CONF_VIN = "vin"
 CONF_TUSERID = "tuserid"
+# Login via SMS (telefono): alternativa all'email. Alcuni account sono registrati col
+# numero e NON hanno email → per loro il login email fallisce. Se `phone` è valorizzato
+# nell'entry, il login usa il ramo SMS (invio codice via sendSmsCode + grant_type=mobile).
+CONF_PHONE = "phone"
+CONF_AREA_CODE = "area_code"     # prefisso internazionale in sole cifre (Italia = 39)
+DEFAULT_AREA_CODE = "39"
 
 # Identità veicolo per il device HA (nome dinamico: "Omoda 9", "Jaecoo 7"…). `vehicle_name`
 # = nickname/modello dall'app, salvato in entry.data (catturato al config flow o backfillato);

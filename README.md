@@ -14,11 +14,11 @@
 Bring your **Omoda 9 / Jaecoo** car into **Home Assistant**: vehicle status,
 location and commands — just like the official app, but integrated into HA.
 
-> ✅ **Ready to use.** All you need to get started is the **email + PIN** of your
-> Omoda/Jaecoo account (plus a **one-time OTP code** received by email on first
-> login). VIN and certificates are detected and installed **automatically**. The
-> package contains **no personal data**: tokens and credentials stay only in
-> *your* Home Assistant.
+> ✅ **Ready to use.** All you need to get started is the **email (or phone
+> number) + PIN** of your Omoda/Jaecoo account, plus a **one-time OTP code**
+> received by email or **SMS** on first login. VIN and certificates are detected
+> and installed **automatically**. The package contains **no personal data**:
+> tokens and credentials stay only in *your* Home Assistant.
 
 > ⚠️ **UNOFFICIAL software**, reverse-engineered. Not affiliated with Omoda /
 > Jaecoo / Chery. Provided "as is", use at your own risk and only on your own
@@ -47,10 +47,17 @@ location and commands — just like the official app, but integrated into HA.
 
 Everything happens **inside Home Assistant**, no external tools:
 
-1. Enter your account **email** and **PIN** (regional endpoints are optional,
-   Europe by default). HA sends an **OTP code** to your email.
-2. Enter the **OTP code** → HA creates the session and discovers your vehicles.
-3. If you have multiple cars, pick the **VIN**; if there's only one it is added
+1. Choose **how to sign in**: with your **email** or with your **phone number
+   (SMS)**. If your Omoda/Jaecoo account is registered with a phone number and
+   has no email address, pick the second one: the first cannot work for you.
+2. Enter your credentials and the account **PIN** (regional endpoints are
+   optional, Europe by default):
+   - **email** → HA sends an **OTP code** to your mailbox;
+   - **phone** → the number **without the country code**, and the country code
+     as digits only (Italy = `39`, no `+`) → HA sends an **SMS** with the code.
+3. Enter the **code** you received → HA creates the session and discovers your
+   vehicles.
+4. If you have multiple cars, pick the **VIN**; if there's only one it is added
    directly, with all its entities.
 
 If the session later expires (usually because you opened the official app), use
