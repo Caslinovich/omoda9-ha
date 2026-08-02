@@ -11,7 +11,9 @@ import pytest
 from homeassistant import config_entries, data_entry_flow
 
 import fixtures as FX
-from custom_components.omoda9.const import CONF_EMAIL, CONF_PIN, CONF_VIN, DOMAIN
+from custom_components.omoda9.const import (
+    CONF_EMAIL, CONF_PIN, CONF_VIN, CONF_PHONE, CONF_AREA_CODE, DOMAIN,
+)
 
 
 @pytest.fixture
@@ -29,6 +31,21 @@ def flusso_ok(monkeypatch):
 
 
 DATI_UTENTE = {CONF_EMAIL: FX.EMAIL, CONF_PIN: FX.PIN}
+DATI_TELEFONO = {CONF_PHONE: FX.PHONE, CONF_AREA_CODE: FX.AREA_CODE, CONF_PIN: FX.PIN}
+
+
+async def _scegli_email(hass, result):
+    """Dal menu iniziale (email/telefono) sceglie il ramo EMAIL e mostra il form."""
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login_email"})
+
+
+async def _init_e_email(hass):
+    """Init del flow + selezione del ramo email: ritorna il form 'login_email' pronto."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert result["step_id"] == "user"
+    return await _scegli_email(hass, result)
 
 
 def _forza_blocco(coordinator) -> None:
@@ -48,9 +65,8 @@ def _forza_blocco(coordinator) -> None:
 
 async def test_configurazione_completa(hass, flusso_ok):
     """Il percorso normale: email + PIN → OTP → entry creato col VIN scoperto."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
-    assert result["step_id"] == "user"
+    result = await _init_e_email(hass)
+    assert result["step_id"] == "login_email"
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], DATI_UTENTE)
@@ -63,18 +79,43 @@ async def test_configurazione_completa(hass, flusso_ok):
     assert result["data"][CONF_EMAIL] == FX.EMAIL
 
 
+async def test_configurazione_via_telefono(hass, flusso_ok):
+    """Login via SMS: menu → telefono → OTP → entry con numero e prefisso salvati.
+
+    Alcuni account sono registrati col numero e non hanno email: il ramo telefono manda
+    il codice via SMS (invio dietro WAF risolto con client BoringSSL) e conia il token
+    con grant_type=mobile."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "login_phone"})
+    assert result["step_id"] == "login_phone"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], DATI_TELEFONO)
+    assert result["step_id"] == "otp"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"code": "123456"})
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_VIN] == FX.VIN
+    assert result["data"][CONF_PHONE] == FX.PHONE
+    assert result["data"][CONF_AREA_CODE] == FX.AREA_CODE
+
+
 async def test_invio_otp_fallito_resta_nel_primo_passo(hass, monkeypatch):
     """Se l'OTP non parte non si prosegue: chiedere un codice mai inviato manderebbe
     l'utente a cercare un'email che non arriverà."""
     from custom_components.omoda9 import config_flow as cf
 
     monkeypatch.setattr(cf, "_send_otp", lambda hass, data: (False, "email.not.exists"))
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _init_e_email(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], DATI_UTENTE)
 
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "login_email"
     assert result["errors"]["base"] == "otp_send_failed"
 
 
@@ -90,8 +131,7 @@ async def test_otp_errato_ripulisce_il_token_a_meta(hass, monkeypatch):
     monkeypatch.setattr(cf, "_cleanup_pending",
                         lambda hass: pulizie.__setitem__("n", pulizie["n"] + 1))
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _init_e_email(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], DATI_UTENTE)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "000000"})
@@ -106,8 +146,7 @@ async def test_piu_veicoli_chiede_quale(hass, flusso_ok, monkeypatch):
     monkeypatch.setattr(flusso_ok, "_discover",
                         lambda hass, data: (True, FX.TUSERID, [FX.VIN, altro], "ok"))
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _init_e_email(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], DATI_UTENTE)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "123456"})
@@ -121,8 +160,7 @@ async def test_piu_veicoli_chiede_quale(hass, flusso_ok, monkeypatch):
 async def test_stesso_veicolo_non_si_configura_due_volte(hass, flusso_ok, config_entry):
     """Il VIN è l'identità univoca: un secondo entry darebbe due set di entità in
     conflitto sulla stessa auto."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _init_e_email(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], DATI_UTENTE)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "123456"})
@@ -136,8 +174,7 @@ async def test_token_non_spostabile_fa_fallire_il_flow(hass, flusso_ok, monkeypa
     abort esplicito che un'integrazione creata e subito rotta."""
     monkeypatch.setattr(flusso_ok, "_finalize_token", lambda hass, vin: False)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _init_e_email(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], DATI_UTENTE)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "123456"})

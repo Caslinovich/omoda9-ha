@@ -21,6 +21,12 @@ import json
 # ───────────────────────── identità sintetiche ─────────────────────────
 VIN = "LZZAAAAAA1B2C3D4E"          # VIN_PLACEHOLDER: sintetico, non è un VIN reale
 EMAIL = "mario.rossi@example.com"
+# Il prefisso 300 NON è assegnato a nessun operatore mobile italiano (i cellulari veri
+# stanno in 31x-39x) → ha la forma giusta ma non può essere di nessuno. ⚠️ Il marcatore
+# va sulla RIGA del valore, non nel commento: l'allowlist di `check_secrets.sh` filtra
+# per riga (stessa trappola già vista col VIN).
+PHONE = "3001234567"               # PHONE_PLACEHOLDER: sintetico, non è di nessuno
+AREA_CODE = "39"
 PIN = "4917"
 TUSERID = "100000000000000001"
 ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlX2ZpbnRh"

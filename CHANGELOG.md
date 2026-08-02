@@ -6,6 +6,16 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.8.0 — 2026-08-02
+
+### 🇮🇹 Italiano
+
+- **Ora si può accedere con il numero di telefono.** Se il tuo account Omoda/Jaecoo è registrato con un numero invece che con un indirizzo email, scegli «Accedi con numero di telefono»: il codice di verifica ti arriva via **SMS**.
+
+### 🇬🇧 English
+
+- **You can now sign in with your phone number.** If your Omoda/Jaecoo account is registered with a phone number instead of an email address, pick "Sign in with phone number": the verification code arrives by **SMS**.
+
 ## v1.7.2 — 2026-08-02
 
 ### 🇮🇹 Italiano
