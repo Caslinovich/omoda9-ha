@@ -482,78 +482,133 @@ class Omoda9ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=f"Omoda 9 ({vin})", data=self._data)
 
     # ───────────────── Riconfigurazione PIN (senza smontare l'integrazione) ─────────────────
+    def _entry_da_riconfigurare(self):
+        return self.hass.config_entries.async_get_entry(self.context["entry_id"])
+
+    def _applica_riconfigurazione(self, entry, dati: dict):
+        """Scrive i dati nuovi e ricarica l'integrazione.
+
+        Il reset del blocco anti-PIN sta qui e non nel solo passo del PIN perché il reload
+        avviene comunque: farlo in un ramo solo lascerebbe il blocco attivo dopo un cambio di
+        metodo, che è proprio il momento in cui si sta cercando di rimettere in piedi l'accesso."""
+        from homeassistant.helpers import issue_registry as ir
+        ir.async_delete_issue(self.hass, DOMAIN, f"pin_wrong_{entry.entry_id}")
+        # P0-2: reset INCONDIZIONATO prima del reload. `_bind_core` azzera solo se il PIN è
+        # cambiato → reinserire lo STESSO PIN lasciava il blocco attivo.
+        _clear_pin_lockout(self.hass, entry.entry_id)
+        return self.async_update_reload_and_abort(entry, data=dati)
+
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
-        """Corregge il PIN dei comandi e — per gli account SMS — il NUMERO di telefono.
+        """Menu di «Configura»: cosa si vuole correggere, senza toccare il resto.
+
+        ⚠️ È un MENU e non un unico modulo, e la ragione è pratica: chi entra qui per cambiare
+        il modo in cui riceve il codice non deve trovarsi a dover ridigitare il PIN dei comandi,
+        che non c'entra nulla e che — essendo una credenziale — non può essere pre-riempito nel
+        form. Separando i passi, ogni schermata chiede soltanto ciò che si sta cambiando.
+
+        Le tre voci coprono i tre guasti reali visti sul campo:
+          * il PIN dei comandi sbagliato (i comandi risultano riusciti e l'auto non fa nulla);
+          * il numero di telefono cambiato o digitato male — prima l'unica via era eliminare e
+            riaggiungere l'integrazione, perdendo entity_id e storico di oltre cento entità;
+          * l'account registrato con un canale diverso da quello con cui è stata configurata
+            l'integrazione: la riautenticazione offre SOLO il canale configurato, quindi senza
+            questo passo non c'era modo di passare dall'e-mail all'SMS o viceversa."""
+        entry = self._entry_da_riconfigurare()
+        if entry is None:
+            return self.async_abort(reason="reconfigure_no_entry")
+        return self.async_show_menu(
+            step_id="reconfigure",
+            menu_options=["reconfigure_pin", "reconfigure_email", "reconfigure_phone"],
+        )
+
+    async def async_step_reconfigure_pin(self, user_input: dict[str, Any] | None = None):
+        """Cambia il PIN a 4 cifre dei comandi remoti, senza OTP.
 
         Il PIN non serve al login (l'OTP conia il token, il PIN firma solo i comandi) →
-        correggerlo è pura scrittura in entry.data + reload. È il rimedio al «PIN comandi
-        errato»: prima si doveva eliminare e riaggiungere l'integrazione.
+        correggerlo è pura scrittura in entry.data + reload."""
+        entry = self._entry_da_riconfigurare()
+        errors: dict[str, str] = {}
+        if entry is None:
+            return self.async_abort(reason="reconfigure_no_entry")
+        if user_input is not None:
+            new_pin = (user_input.get(CONF_PIN) or "").strip()
+            if not new_pin:
+                errors["base"] = "pin_required"
+            else:
+                return self._applica_riconfigurazione(
+                    entry, {**entry.data, CONF_PIN: new_pin})
+        # P1-5: campo PASSWORD e NESSUN default col PIN attuale. Prima il PIN comandi
+        # compariva in chiaro nel form (e nello screenshot che l'utente allega al supporto):
+        # è una credenziale. Si riscrive da zero, mascherato.
+        return self.async_show_form(
+            step_id="reconfigure_pin", errors=errors,
+            data_schema=vol.Schema({
+                vol.Required(CONF_PIN): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+            }))
 
-        ⚠️ Perché c'è anche il numero. Le persone cambiano numero di telefono molto più spesso
-        di quanto cambino indirizzo e-mail, e finché questo passo toccava il solo PIN chi
-        cambiava numero non aveva NESSUNA via d'uscita: la riautenticazione continuava a
-        spedire l'SMS al vecchio numero, e l'unico rimedio era eliminare e riaggiungere
-        l'integrazione — perdendo entity_id e storico di oltre cento entità. Lo stesso valeva
-        per un numero digitato male in fase di configurazione.
+    async def async_step_reconfigure_email(self, user_input: dict[str, Any] | None = None):
+        """Passa a ricevere il codice via e-mail (o corregge l'indirizzo).
+
+        ⚠️ Il numero viene SVUOTATO, non lasciato lì: il canale attivo è «telefono se c'è un
+        numero, altrimenti e-mail» (`core/session._is_phone`), quindi un numero dimenticato in
+        configurazione continuerebbe a dirottare l'invio dell'OTP sull'SMS. L'indirizzo invece
+        resta salvato anche quando si sceglie l'SMS, così tornare indietro è a due tap."""
+        entry = self._entry_da_riconfigurare()
+        errors: dict[str, str] = {}
+        if entry is None:
+            return self.async_abort(reason="reconfigure_no_entry")
+        if user_input is not None:
+            indirizzo = (user_input.get(CONF_EMAIL) or "").strip()
+            if "@" not in indirizzo or "." not in indirizzo.rpartition("@")[2]:
+                errors["base"] = "email_invalid"
+            else:
+                return self._applica_riconfigurazione(entry, {
+                    **entry.data, CONF_EMAIL: indirizzo,
+                    CONF_PHONE: "", CONF_AREA_CODE: "",
+                })
+        return self.async_show_form(
+            step_id="reconfigure_email", errors=errors,
+            data_schema=vol.Schema({
+                vol.Required(CONF_EMAIL,
+                             default=entry.data.get(CONF_EMAIL, "")): str,
+            }))
+
+    async def async_step_reconfigure_phone(self, user_input: dict[str, Any] | None = None):
+        """Passa a ricevere il codice via SMS (o corregge il numero).
 
         Il numero passa dalla STESSA normalizzazione del primo accesso: è il punto unico di
         pulizia, e farne una seconda copia qui vorrebbe dire vederle divergere.
 
-        NB: cambiare il numero non tocca il token in corso — la sessione resta valida finché
-        non scade. Cambia solo dove arriverà il prossimo codice."""
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        NB: cambiare canale non tocca il token in corso — la sessione resta valida finché non
+        scade. Cambia solo dove arriverà il prossimo codice. E se il numero non risulta
+        associato all'account Omoda, l'invio fallirà con un messaggio esplicito: si torna
+        all'e-mail da questo stesso menu, senza aver perso niente."""
+        entry = self._entry_da_riconfigurare()
         errors: dict[str, str] = {}
         if entry is None:
             return self.async_abort(reason="reconfigure_no_entry")
-        # I campi del numero si mostrano solo a chi accede via SMS: a un account e-mail non
-        # servono, e offrirglieli lo inviterebbe a compilare un campo che non verrà mai usato.
-        account_sms = bool(entry.data.get(CONF_PHONE))
         if user_input is not None:
-            new_pin = (user_input.get(CONF_PIN) or "").strip()
-            numero = prefisso = ""
-            if account_sms:
-                numero, prefisso = _normalizza_telefono(
-                    user_input.get(CONF_PHONE), user_input.get(CONF_AREA_CODE))
-            if not new_pin:
-                errors["base"] = "pin_required"
-            elif account_sms and not numero:
+            numero, prefisso = _normalizza_telefono(
+                user_input.get(CONF_PHONE), user_input.get(CONF_AREA_CODE))
+            if not numero:
                 errors["base"] = "phone_invalid"
             else:
-                # chiudi un eventuale avviso "PIN errato": il reload azzera l'anti-lockout
-                # (commands.reset_pin_lockout in _bind_core quando rileva il PIN cambiato).
-                from homeassistant.helpers import issue_registry as ir
-                ir.async_delete_issue(self.hass, DOMAIN, f"pin_wrong_{entry.entry_id}")
-                # P0-2: reset INCONDIZIONATO prima del reload. `_bind_core` azzera solo
-                # se il PIN è cambiato → reinserire lo STESSO PIN lasciava il blocco attivo.
-                _clear_pin_lockout(self.hass, entry.entry_id)
-                dati = {**entry.data, CONF_PIN: new_pin}
-                if account_sms:
-                    dati[CONF_PHONE], dati[CONF_AREA_CODE] = numero, prefisso
-                return self.async_update_reload_and_abort(entry, data=dati)
-        # P1-5: campo PASSWORD e NESSUN default col PIN attuale. Prima il PIN comandi
-        # compariva in chiaro nel form (e nello screenshot che l'utente allega al supporto):
-        # è una credenziale. Si riscrive da zero, mascherato.
-        campi: dict[Any, Any] = {}
-        if account_sms:
-            # Il numero attuale SÌ come valore predefinito, a differenza del PIN: non è una
-            # credenziale, e chi entra qui per cambiarne una cifra deve poter vedere da dove
-            # parte invece di riscriverlo a memoria.
-            campi[vol.Required(CONF_PHONE, default=entry.data.get(CONF_PHONE, ""))] = str
-            campi[vol.Required(
-                CONF_AREA_CODE,
-                default=entry.data.get(CONF_AREA_CODE, DEFAULT_AREA_CODE))] = str
-        campi[vol.Required(CONF_PIN)] = TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD))
-        schema = vol.Schema(campi)
+                return self._applica_riconfigurazione(entry, {
+                    **entry.data, CONF_PHONE: numero, CONF_AREA_CODE: prefisso,
+                })
+        # Il numero attuale SÌ come valore predefinito, a differenza del PIN: non è una
+        # credenziale, e chi entra qui per cambiarne una cifra deve poter vedere da dove parte
+        # invece di riscriverlo a memoria.
+        schema = vol.Schema({
+            vol.Required(CONF_PHONE, default=entry.data.get(CONF_PHONE, "")): str,
+            vol.Required(CONF_AREA_CODE,
+                         default=entry.data.get(CONF_AREA_CODE) or DEFAULT_AREA_CODE): str,
+        })
         if user_input is not None:
-            # Ripropone quanto digitato (numero compreso, già normalizzato), mai il PIN.
-            schema = self.add_suggested_values_to_schema(
-                schema, {k: v for k, v in user_input.items() if k != CONF_PIN})
-        # NB: nessun segnaposto riempito da qui. Una frase costruita in Python non passa dai
-        # file di traduzione e arriverebbe in italiano a un'interfaccia in inglese: la
-        # descrizione del passo copre entrambi i casi, e il campo del numero semplicemente non
-        # compare a chi accede con l'e-mail.
-        return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
+            schema = self.add_suggested_values_to_schema(schema, user_input)
+        return self.async_show_form(
+            step_id="reconfigure_phone", data_schema=schema, errors=errors)
 
     # ───────────────── Riautenticazione nativa (sessione morta / app ufficiale aperta) ─────────────────
     # REGOLA: aprire questa pagina non manda MAI un codice. L'OTP parte solo quando

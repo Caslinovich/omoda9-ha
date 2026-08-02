@@ -53,12 +53,12 @@
         }
       },
       "reconfigure": {
-        "title": "Correggi PIN e numero di telefono",
-        "description": "Cambia il PIN a 4 cifre usato per i comandi remoti e — se accedi via SMS — il numero di telefono a cui arriva il codice.\n\nIl PIN non serve per l'accesso, quindi qui non viene richiesto alcun codice. Correggilo se i comandi risultano «riusciti» ma l'auto non fa nulla (PIN errato). Cambia il numero se hai cambiato scheda telefonica: la sessione in corso resta valida, cambia solo dove arriverà il prossimo codice.",
-        "data": {
-          "pin": "PIN di controllo veicolo",
-          "phone": "Numero di telefono (senza prefisso internazionale)",
-          "area_code": "Prefisso internazionale, solo cifre (Italia = 39)"
+        "title": "Modifica le impostazioni",
+        "description": "Cosa vuoi correggere? Ogni voce chiede soltanto ciò che cambia: se cambi il modo in cui ricevi il codice, il PIN non ti viene richiesto.",
+        "menu_options": {
+          "reconfigure_pin": "PIN di controllo veicolo",
+          "reconfigure_email": "Ricevi il codice via email",
+          "reconfigure_phone": "Ricevi il codice via SMS"
         }
       },
       "reauth_confirm": {
@@ -76,6 +76,28 @@
         "data": {
           "code": "Codice OTP"
         }
+      },
+      "reconfigure_pin": {
+        "title": "PIN di controllo veicolo",
+        "description": "Inserisci il PIN a 4 cifre usato per i comandi remoti. Il PIN non serve per l'accesso, quindi qui non viene richiesto alcun codice di verifica. Correggilo se i comandi risultano «riusciti» ma l'auto non fa nulla.",
+        "data": {
+          "pin": "PIN di controllo veicolo"
+        }
+      },
+      "reconfigure_email": {
+        "title": "Ricevi il codice via email",
+        "description": "D'ora in poi il codice di verifica arriverà a questo indirizzo. Usa questa voce se il tuo account è registrato con un'email, oppure per correggere un errore di battitura.\n\nLa sessione in corso resta valida: cambia solo dove arriverà il prossimo codice.",
+        "data": {
+          "email": "Email dell'account"
+        }
+      },
+      "reconfigure_phone": {
+        "title": "Ricevi il codice via SMS",
+        "description": "D'ora in poi il codice di verifica arriverà a questo numero. Scrivi il numero senza prefisso internazionale, e il prefisso solo in cifre (Italia = 39, senza +).\n\nLa sessione in corso resta valida: cambia solo dove arriverà il prossimo codice. Se il numero non è quello registrato sul tuo account Omoda/Jaecoo l'SMS non arriverà — puoi tornare all'email da questo stesso menu.",
+        "data": {
+          "phone": "Numero di telefono (senza prefisso internazionale)",
+          "area_code": "Prefisso internazionale, solo cifre (Italia = 39)"
+        }
       }
     },
     "error": {
@@ -84,7 +106,8 @@
       "no_vehicle": "Login riuscito ma nessun veicolo trovato su questo account.",
       "pin_required": "Inserisci il PIN di controllo veicolo.",
       "otp_required": "Inserisci il codice che hai ricevuto.",
-      "phone_invalid": "Questo numero non sembra giusto. Scrivi solo le cifre del numero, senza prefisso internazionale e senza spazi; nell'altro campo metti solo le cifre del prefisso (Italia = 39)."
+      "phone_invalid": "Questo numero non sembra giusto. Scrivi solo le cifre del numero, senza prefisso internazionale e senza spazi; nell'altro campo metti solo le cifre del prefisso (Italia = 39).",
+      "email_invalid": "Questo indirizzo email non sembra giusto."
     },
     "abort": {
       "already_configured": "Questo veicolo (VIN) è già configurato.",

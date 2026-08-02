@@ -53,12 +53,12 @@
         }
       },
       "reconfigure": {
-        "title": "Fix PIN and phone number",
-        "description": "Change the 4-digit PIN used for remote commands and — if you sign in by SMS — the phone number the code is sent to.\n\nThe PIN is not used to sign in, so no code is needed here. Fix it if commands come back as \"successful\" but the car does nothing (wrong PIN). Change the number if you switched phone number: your current session stays valid, only the next code will go to the new number.",
-        "data": {
-          "pin": "Vehicle control PIN",
-          "phone": "Phone number (without country code)",
-          "area_code": "Country code, digits only (Italy = 39)"
+        "title": "Change settings",
+        "description": "What do you want to correct? Each option only asks for what it changes: changing how you receive the code will not ask for your PIN.",
+        "menu_options": {
+          "reconfigure_pin": "Vehicle control PIN",
+          "reconfigure_email": "Receive the code by email",
+          "reconfigure_phone": "Receive the code by SMS"
         }
       },
       "reauth_confirm": {
@@ -76,6 +76,28 @@
         "data": {
           "code": "OTP code"
         }
+      },
+      "reconfigure_pin": {
+        "title": "Vehicle control PIN",
+        "description": "Enter the 4-digit PIN used for remote commands. The PIN is not used to sign in, so no verification code is needed here. Fix it if commands come back as \"successful\" but the car does nothing.",
+        "data": {
+          "pin": "Vehicle control PIN"
+        }
+      },
+      "reconfigure_email": {
+        "title": "Receive the code by email",
+        "description": "The verification code will be sent to this address from now on. Use this if your account is registered with an email address, or to correct a typo.\n\nYour current session stays valid: only the next code changes route.",
+        "data": {
+          "email": "Account email"
+        }
+      },
+      "reconfigure_phone": {
+        "title": "Receive the code by SMS",
+        "description": "The verification code will be sent to this number from now on. Write the number without the country code, and the country code as digits only (Italy = 39, no +).\n\nYour current session stays valid: only the next code changes route. If the number is not the one registered with your Omoda/Jaecoo account the SMS will not arrive — you can switch back to email from this same menu.",
+        "data": {
+          "phone": "Phone number (without country code)",
+          "area_code": "Country code, digits only (Italy = 39)"
+        }
       }
     },
     "error": {
@@ -84,7 +106,8 @@
       "no_vehicle": "Login succeeded but no vehicle was found on this account.",
       "pin_required": "Enter the vehicle control PIN.",
       "otp_required": "Enter the code you received.",
-      "phone_invalid": "That phone number does not look right. Enter the digits of the number only, without the country code and without spaces; in the other field put only the digits of the country code (Italy = 39)."
+      "phone_invalid": "That phone number does not look right. Enter the digits of the number only, without the country code and without spaces; in the other field put only the digits of the country code (Italy = 39).",
+      "email_invalid": "That email address does not look right."
     },
     "abort": {
       "already_configured": "This vehicle (VIN) is already configured.",

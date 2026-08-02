@@ -6,6 +6,16 @@ dell'integrazione: aggiorna da **HACS → Omoda 9 / Jaecoo → Aggiorna**.
 
 ## [Non rilasciato]
 
+## v1.9.0 — 2026-08-02
+
+### 🇮🇹 Italiano
+
+- **Ora puoi cambiare come ricevere il codice.** In «Configura» scegli se farti mandare il codice via **email** o via **SMS**, e puoi correggere l'indirizzo o il numero. Prima il canale restava quello scelto alla prima configurazione e l'unico modo di cambiarlo era eliminare e riaggiungere l'integrazione.
+
+### 🇬🇧 English
+
+- **You can now change how you receive the code.** Under "Configure" you choose whether the code is sent by **email** or by **SMS**, and you can correct the address or the number. Before, the channel stayed the one picked at first setup, and the only way to change it was to delete and re-add the integration.
+
 ## v1.8.0 — 2026-08-02
 
 ### 🇮🇹 Italiano

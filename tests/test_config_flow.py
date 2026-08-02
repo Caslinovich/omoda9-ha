@@ -197,6 +197,11 @@ async def test_riconfigura_pin_azzera_sempre_il_lockout(hass, integrazione_avvia
         context={"source": config_entries.SOURCE_RECONFIGURE,
                  "entry_id": integrazione_avviata.entry_id})
     assert result["step_id"] == "reconfigure"
+    # «Configura» è un MENU: il PIN vive in un passo suo, così chi entra per cambiare il modo
+    # in cui riceve il codice non si trova a dover ridigitare una credenziale che non c'entra.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_pin"})
+    assert result["step_id"] == "reconfigure_pin"
 
     # STESSO PIN di prima: è proprio il caso che prima non sbloccava
     await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PIN: FX.PIN})
@@ -213,6 +218,8 @@ async def test_form_pin_non_mostra_il_pin_attuale(hass, integrazione_avviata):
         DOMAIN,
         context={"source": config_entries.SOURCE_RECONFIGURE,
                  "entry_id": integrazione_avviata.entry_id})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_pin"})
 
     schema = result["data_schema"].schema
     campo = next(k for k in schema if str(k) == CONF_PIN)
@@ -233,6 +240,8 @@ async def test_pin_vuoto_rifiutato(hass, integrazione_avviata):
         DOMAIN,
         context={"source": config_entries.SOURCE_RECONFIGURE,
                  "entry_id": integrazione_avviata.entry_id})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "reconfigure_pin"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_PIN: "   "})
     assert result["errors"]["base"] == "pin_required"
