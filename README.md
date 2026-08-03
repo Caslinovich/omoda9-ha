@@ -133,13 +133,19 @@ Assistant**. The change history is in the [CHANGELOG](CHANGELOG.md).
 
 The integration only provides the entities: it **doesn't send notifications on
 its own**. If you want a **popup when a command to the car fails** (vehicle busy,
-unreachable, expired session…), import the included blueprint:
+unreachable, expired session, command carried out only in part…), import the
+included blueprint:
 
-[![Import the blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FCaslinovich%2Fomoda9-ha%2Fblob%2Fmaster%2Fblueprints%2Fautomation%2Fomoda9%2Fcomando_fallito.yaml)
+[![Import the blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FCaslinovich%2Fomoda9-ha%2Fblob%2Fmaster%2Fblueprints%2Fautomation%2Fomoda9%2Ffailed_command.yaml)
 
 Then **Settings → Automations → Create automation → From blueprint → _Omoda 9 /
-Jaecoo — Failed command alert_**. It recognizes only real failures (it ignores ✅
-and ⏳), so no false alarms.
+Jaecoo — Failed command alert_**. It recognizes only real failures — successes
+and the intermediate steps of a send are ignored, so no false alarms — and the
+popup dismisses itself as soon as a command succeeds. Needs **HA 2024.10+**.
+
+(An Italian version of the same blueprint is available as
+[`comando_fallito.yaml`](blueprints/automation/omoda9/comando_fallito.yaml):
+Home Assistant cannot translate a blueprint, so there is one file per language.)
 
 ## If something doesn't work
 
@@ -156,7 +162,8 @@ and ⏳), so no false alarms.
 
 ## Requirements
 
-- Home Assistant 2024.1.0+ with HACS (the **Reconfigure** menu needs 2024.4+).
+- Home Assistant 2024.1.0+ with HACS (the **Reconfigure** menu needs 2024.4+, the
+  optional blueprint 2024.10+).
 - An Omoda/Jaecoo account with the vehicle associated (**owner**). Delegate
   accounts (`authorizeType` 0) are untested.
 - A local MQTT broker is **not** needed: the integration connects to the car's

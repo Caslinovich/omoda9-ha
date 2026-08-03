@@ -4,16 +4,21 @@ blueprint:
     Mostra un popup in Home Assistant (e, se vuoi, invia una notifica push) quando un
     comando inviato all'auto tramite l'integrazione **Omoda 9 / Jaecoo** non va a buon
     fine: veicolo occupato, auto non raggiungibile, rate-limit, errore di rete, sessione
-    scaduta o problema segnalato dall'auto.
+    scaduta, comando eseguito **solo in parte** o altro problema segnalato dall'auto.
 
 
-    Riconosce solo i veri fallimenti: ignora gli esiti positivi (✅), "in corso" (⏳) e i
-    messaggi intermedi, così non ricevi falsi allarmi. Il popup usa un id fisso, quindi
-    più tentativi falliti aggiornano lo stesso avviso invece di impilarne tanti.
+    Riconosce solo i veri fallimenti: ignora gli esiti positivi (✅) e i passaggi
+    intermedi dell'invio, così non ricevi falsi allarmi. Attenzione: «auto occupata»
+    mostra una clessidra ⏳ ma **è** un fallimento — quel comando non è stato eseguito —
+    quindi viene segnalato.
+
+
+    Il popup usa un id fisso, quindi più tentativi falliti aggiornano lo stesso avviso
+    invece di impilarne tanti, e **si chiude da solo** al primo comando riuscito.
   domain: automation
   author: Caslinovich
   homeassistant:
-    min_version: 2024.6.0
+    min_version: 2024.10.0
   input:
     esito_sensor:
       name: Sensore "Esito comando"
@@ -43,32 +48,53 @@ blueprint:
       selector:
         text: {}
 
-mode: single
+# «queued» e non «single»: durante un comando il sensore cambia più volte di fila
+# (invio → esito). Con «single» un esito riuscito che arrivasse mentre gira l'avviso
+# precedente verrebbe scartato, e il popup resterebbe aperto su un guasto già risolto.
+mode: queued
+max: 10
 max_exceeded: silent
 
-trigger:
-  - platform: state
+triggers:
+  - trigger: state
     entity_id: !input esito_sensor
 
 variables:
-  esito: "{{ trigger.to_state.state }}"
+  # `trigger` non esiste se l'automazione viene lanciata a mano da «Esegui azioni»:
+  # senza questa guardia il rendering delle variabili fallirebbe con un errore.
+  esito: "{{ trigger.to_state.state if trigger is defined and trigger.to_state is defined else '' }}"
+  riuscito: "{{ '✅' in esito }}"
+  # Un fallimento vero. L'elenco dei marcatori segue i messaggi che l'integrazione
+  # scrive davvero: «⚠️» è l'esecuzione solo PARZIALE (es. clima partito, sedili no),
+  # e senza di esso quel caso passava in silenzio.
+  fallito: >
+    {{ esito not in ['unknown', 'unavailable', ''] and not riuscito and (
+         '❌' in esito or '🚫' in esito or '⚠️' in esito
+         or 'HTTP ' in esito
+         or 'errore rete' in esito or 'net_error' in esito or 'fallit' in esito
+         or 'nessun taskId' in esito or 'comando sconosciuto' in esito) }}
   popup_ha: !input popup_ha
   push_service: !input push_service
 
-condition:
+conditions:
   - condition: template
-    value_template: >
-      {% set s = esito %}
-      {{ s not in ['unknown', 'unavailable', ''] and (
-           '❌' in s or '🚫' in s
-           or ('HTTP ' in s and '✅' not in s)
-           or 'errore rete' in s or 'net_error' in s or 'fallit' in s) }}
+    value_template: "{{ fallito or riuscito }}"
 
-action:
-  - choose:
-      - conditions: "{{ popup_ha }}"
-        sequence:
-          - service: persistent_notification.create
+actions:
+  - if:
+      - condition: template
+        value_template: "{{ riuscito }}"
+    then:
+      # Un comando è andato a buon fine: l'avviso precedente non ha più ragione d'essere.
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: omoda9_comando_fallito
+    else:
+      - if:
+          - condition: template
+            value_template: "{{ popup_ha }}"
+        then:
+          - action: persistent_notification.create
             data:
               notification_id: omoda9_comando_fallito
               title: "❌ Comando Omoda non riuscito"
@@ -77,15 +103,18 @@ action:
 
 
                 Riprova tra qualche secondo. Se dice *occupato/non raggiungibile* l'auto
-                sta già elaborando un altro comando (ne gestisce uno alla volta). Se
-                *rate-limit* o *sessione scaduta*, attendi o rifai il login OTP.
+                sta già elaborando un altro comando (ne gestisce uno alla volta). Se dice
+                *eseguito solo in parte*, il comando è partito ma l'auto non ha applicato
+                tutto: rimanda solo la parte mancante. Se *rate-limit*, aspetta. Se
+                *sessione scaduta*, riautentica l'integrazione.
 
 
                 _aggiornato alle {{ now().strftime('%H:%M:%S') }}_
-  - choose:
-      - conditions: "{{ push_service | trim != '' }}"
-        sequence:
-          - service: "{{ push_service }}"
+      - if:
+          - condition: template
+            value_template: "{{ push_service | trim != '' }}"
+        then:
+          - action: "{{ push_service }}"
             data:
               title: "❌ Comando Omoda non riuscito"
               message: "{{ esito }}"

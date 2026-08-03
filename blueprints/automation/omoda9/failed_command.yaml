@@ -1,0 +1,120 @@
+blueprint:
+  name: Omoda 9 / Jaecoo — Failed command alert
+  description: >
+    Shows a popup in Home Assistant (and, if you want, sends a push notification) when a
+    command sent to the car through the **Omoda 9 / Jaecoo** integration does not go
+    through: vehicle busy, car unreachable, rate limit, network error, expired session,
+    a command carried out **only in part**, or any other fault reported by the car.
+
+
+    It recognises real failures only: successful results (✅) and the intermediate steps
+    of a send are ignored, so no false alarms. Note: "car busy" carries an hourglass ⏳
+    but **is** a failure — that command was not executed — so it is reported.
+
+
+    The popup uses a fixed id, so repeated failures update the same notification instead
+    of stacking up, and it **dismisses itself** as soon as a command succeeds.
+  domain: automation
+  author: Caslinovich
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    esito_sensor:
+      name: "\"Command result\" sensor"
+      description: >
+        The integration sensor that reports the result of the last command.
+        Usually `sensor.omoda9_esito_comando`.
+      default: sensor.omoda9_esito_comando
+      selector:
+        entity:
+          integration: omoda9
+          domain: sensor
+    popup_ha:
+      name: Popup in Home Assistant
+      description: >
+        Creates a persistent notification, visible in HA (app and browser) to anyone
+        using it. It is the simplest option and works everywhere.
+      default: true
+      selector:
+        boolean: {}
+    push_service:
+      name: Push notification (optional)
+      description: >
+        To also get a push on your phone/tablet, write the notify service of your device
+        here, for example `notify.mobile_app_my_phone` (you can find it under Developer
+        tools → Actions). Leave empty for no push.
+      default: ""
+      selector:
+        text: {}
+
+# "queued" rather than "single": during one command the sensor changes several times in
+# a row (send → result). With "single" a successful result arriving while the previous
+# alert is still running would be dropped, leaving the popup open on a solved fault.
+mode: queued
+max: 10
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input esito_sensor
+
+variables:
+  # `trigger` does not exist when the automation is started by hand from "Run actions":
+  # without this guard, rendering the variables would fail with an error.
+  esito: "{{ trigger.to_state.state if trigger is defined and trigger.to_state is defined else '' }}"
+  riuscito: "{{ '✅' in esito }}"
+  # A real failure. The markers follow the messages the integration actually writes:
+  # "⚠️" is a PARTIAL execution (e.g. climate started, seats did not), and without it
+  # that case went unreported.
+  fallito: >
+    {{ esito not in ['unknown', 'unavailable', ''] and not riuscito and (
+         '❌' in esito or '🚫' in esito or '⚠️' in esito
+         or 'HTTP ' in esito
+         or 'errore rete' in esito or 'net_error' in esito or 'fallit' in esito
+         or 'nessun taskId' in esito or 'comando sconosciuto' in esito) }}
+  popup_ha: !input popup_ha
+  push_service: !input push_service
+
+conditions:
+  - condition: template
+    value_template: "{{ fallito or riuscito }}"
+
+actions:
+  - if:
+      - condition: template
+        value_template: "{{ riuscito }}"
+    then:
+      # A command succeeded: the previous alert has no reason to stay up.
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: omoda9_comando_fallito
+    else:
+      - if:
+          - condition: template
+            value_template: "{{ popup_ha }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: omoda9_comando_fallito
+              title: "❌ Omoda command failed"
+              message: >
+                **{{ esito }}**
+
+
+                Try again in a few seconds. If it says *occupato/non raggiungibile*
+                (busy/unreachable) the car is already processing another command — it
+                handles one at a time. If it says *eseguito solo in parte* (carried out
+                only in part) the command did go through but the car did not apply all of
+                it: send just the missing part again. If *rate-limit*, wait. If
+                *sessione scaduta* (session expired), re-authenticate the integration.
+
+
+                _updated at {{ now().strftime('%H:%M:%S') }}_
+      - if:
+          - condition: template
+            value_template: "{{ push_service | trim != '' }}"
+        then:
+          - action: "{{ push_service }}"
+            data:
+              title: "❌ Omoda command failed"
+              message: "{{ esito }}"

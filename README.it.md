@@ -139,13 +139,20 @@ Assistant**. Lo storico delle novità è nel [CHANGELOG](CHANGELOG.md).
 
 L'integrazione fornisce solo le entità: **non invia notifiche da sola**. Se vuoi
 un **popup quando un comando all'auto fallisce** (veicolo occupato, non
-raggiungibile, sessione scaduta…), importa il blueprint incluso:
+raggiungibile, sessione scaduta, comando eseguito solo in parte…), importa il
+blueprint incluso:
 
 [![Importa il blueprint in Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FCaslinovich%2Fomoda9-ha%2Fblob%2Fmaster%2Fblueprints%2Fautomation%2Fomoda9%2Fcomando_fallito.yaml)
 
 Poi **Impostazioni → Automazioni → Crea automazione → Da blueprint → _Omoda 9 /
-Jaecoo — Avviso comando non riuscito_**. Riconosce solo i veri fallimenti
-(ignora ✅ e ⏳), quindi niente falsi allarmi.
+Jaecoo — Avviso comando non riuscito_**. Riconosce solo i veri fallimenti — gli
+esiti positivi e i passaggi intermedi dell'invio vengono ignorati, quindi niente
+falsi allarmi — e il popup si chiude da solo appena un comando riesce. Richiede
+**HA 2024.10+**.
+
+(La stessa automazione in inglese è
+[`failed_command.yaml`](blueprints/automation/omoda9/failed_command.yaml): Home
+Assistant non sa tradurre un blueprint, quindi c'è un file per lingua.)
 
 ## Se qualcosa non funziona
 
@@ -163,7 +170,8 @@ Jaecoo — Avviso comando non riuscito_**. Riconosce solo i veri fallimenti
 
 ## Requisiti
 
-- Home Assistant 2024.1.0+ con HACS (il menu **Riconfigura** richiede 2024.4+).
+- Home Assistant 2024.1.0+ con HACS (il menu **Riconfigura** richiede 2024.4+, il
+  blueprint opzionale 2024.10+).
 - Un account Omoda/Jaecoo con il veicolo associato (**proprietario**). Gli account
   delegati (`authorizeType` 0) non sono collaudati.
 - **Non** serve un broker MQTT locale: l'integrazione si connette **da sola** al
